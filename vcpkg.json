@@ -1,0 +1,17 @@
+{
+  "name": "rvwheel",
+  "version": "0.1.0",
+  "description": "RVWheel Device Abstraction Layer, profile system, and developer tools.",
+  "homepage": "https://github.com/gustavommcv/RVWheel",
+  "dependencies": [
+    "nlohmann-json"
+  ],
+  "features": {
+    "tests": {
+      "description": "Unit test dependencies (Catch2) for RVWheel's own test suite. Not needed by a consumer that only links rvwheel::dal/rvwheel::profiles.",
+      "dependencies": [
+        "catch2"
+      ]
+    }
+  }
+}

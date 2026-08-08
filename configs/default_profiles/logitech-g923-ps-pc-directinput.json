@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "profileId": "logitech-g923-ps-pc-directinput",
+  "displayName": "Logitech G923 (PlayStation/PC, DirectInput)",
+  "match": {
+    "backend": "DirectInput",
+    "vendorId": "0x046D",
+    "productId": "0xC266"
+  },
+  "axes": {
+    "steering": {
+      "source": "X",
+      "direction": "normal",
+      "center": "rangeMidpoint"
+    },
+    "throttle": {
+      "source": "Y",
+      "direction": "inverted"
+    },
+    "brake": {
+      "source": "Rz",
+      "direction": "inverted"
+    },
+    "clutch": {
+      "source": "Slider0",
+      "direction": "inverted"
+    }
+  },
+  "readiness": {
+    "minimumWarmupMilliseconds": 2200,
+    "stableSampleMilliseconds": 250,
+    "maximumWaitMilliseconds": 5000
+  },
+  "sanityChecks": {
+    "expectedButtonCount": 25,
+    "expectedPovCount": 1
+  }
+}

@@ -1,0 +1,44 @@
+# CMake build trees and generated files
+/build*/
+/out/
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+Makefile
+Testing/
+
+# Visual Studio and editor state
+/.vs/
+/.vscode/
+/.idea/
+CMakeUserPresets.json
+*.suo
+*.user
+*.VC.db
+*.VC.VC.opendb
+
+# Compiled artifacts
+*.obj
+*.o
+*.lib
+*.a
+*.dll
+*.exe
+*.exp
+*.ilk
+*.pdb
+
+# vcpkg local state
+/vcpkg_installed/
+/installed/
+
+# Local diagnostics and hardware captures
+*.jsonl
+*.log
+*.tmp
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
