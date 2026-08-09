@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "rvwheel/dal/AxisSource.hpp"
+#include "rvwheel/ffb/ForceFeedbackTypes.hpp"
 
 namespace rvwheel::profiles {
 
@@ -198,6 +199,79 @@ void ParseReadiness(const nlohmann::json& root, dal::DeviceReadinessPolicy& outP
     }
 }
 
+// Absent "forceFeedback" leaves outConfig as std::nullopt: force feedback
+// stays fully inert for any profile that predates this field or simply
+// does not mention it. Every numeric field defaults to its safe
+// (off/zero/conservative) value from ForceFeedbackConfig's own definition
+// if omitted from an otherwise-present block, so a partial block can never
+// accidentally enable a stronger effect than the author wrote.
+void ParseForceFeedback(const nlohmann::json& root, std::optional<rvwheel::ffb::ForceFeedbackConfig>& outConfig,
+                         Validator& validator) {
+    if (!root.contains("forceFeedback")) {
+        return;
+    }
+    const auto& node = root["forceFeedback"];
+    if (!node.is_object()) {
+        validator.Fail("forceFeedback", "must be an object");
+        return;
+    }
+
+    rvwheel::ffb::ForceFeedbackConfig config; // Starts at ForceFeedbackConfig's own safe defaults.
+
+    const auto parseBool = [&](const char* field, bool& out) {
+        if (!node.contains(field)) {
+            return;
+        }
+        if (!node[field].is_boolean()) {
+            validator.Fail(std::string("forceFeedback.") + field, "must be a boolean");
+        } else {
+            out = node[field].get<bool>();
+        }
+    };
+    const auto parseUnitFloat = [&](const char* field, float& out, float minValue, float maxValue) {
+        if (!node.contains(field)) {
+            return;
+        }
+        const std::string path = std::string("forceFeedback.") + field;
+        if (!node[field].is_number()) {
+            validator.Fail(path, "must be a number");
+            return;
+        }
+        const double value = node[field].get<double>();
+        if (value < minValue || value > maxValue) {
+            validator.Fail(path, "must be between " + std::to_string(minValue) + " and " + std::to_string(maxValue));
+            return;
+        }
+        out = static_cast<float>(value);
+    };
+
+    parseBool("enabled", config.enabled);
+    parseBool("invertDirection", config.invertDirection);
+    parseUnitFloat("masterGain", config.masterGain, 0.0f, 1.0f);
+    parseUnitFloat("springStrength", config.springStrength, 0.0f, 1.0f);
+    parseUnitFloat("damperStrength", config.damperStrength, 0.0f, 1.0f);
+    parseUnitFloat("selfAligningTorqueStrength", config.selfAligningTorqueStrength, 0.0f, 1.0f);
+    parseUnitFloat("maxTorqueNormalized", config.maxTorqueNormalized, 0.0f, 1.0f);
+    parseUnitFloat("deadband", config.deadband, 0.0f, 1.0f);
+    parseUnitFloat("slewRatePerSecond", config.slewRatePerSecond, 0.01f, 100.0f);
+
+    if (node.contains("watchdogTimeoutMilliseconds")) {
+        const std::string path = "forceFeedback.watchdogTimeoutMilliseconds";
+        if (!node["watchdogTimeoutMilliseconds"].is_number_integer()) {
+            validator.Fail(path, "must be an integer number of milliseconds");
+        } else {
+            const auto value = node["watchdogTimeoutMilliseconds"].get<long long>();
+            if (value < 1 || value > kMaxReadinessMilliseconds) {
+                validator.Fail(path, "must be between 1 and " + std::to_string(kMaxReadinessMilliseconds) + " milliseconds");
+            } else {
+                config.watchdogTimeout = std::chrono::milliseconds{value};
+            }
+        }
+    }
+
+    outConfig = config;
+}
+
 } // namespace
 
 ProfileParseResult ProfileLoader::ParseFromString(std::string_view jsonText) {
@@ -289,6 +363,7 @@ ProfileParseResult ProfileLoader::ParseFromString(std::string_view jsonText) {
         ParseAxis(root, "clutch", profile.layout.clutch, usedSources, validator);
 
         ParseReadiness(root, profile.readiness, validator);
+        ParseForceFeedback(root, profile.forceFeedback, validator);
 
         if (root.contains("sanityChecks")) {
             const auto& sanity = root["sanityChecks"];
@@ -386,6 +461,22 @@ std::string ProfileLoader::Serialize(const DeviceProfile& profile) {
             sanity["expectedPovCount"] = static_cast<int>(*profile.expectedPovCount);
         }
         root["sanityChecks"] = sanity;
+    }
+
+    if (profile.forceFeedback) {
+        const auto& ffb = *profile.forceFeedback;
+        nlohmann::json node;
+        node["enabled"] = ffb.enabled;
+        node["masterGain"] = ffb.masterGain;
+        node["invertDirection"] = ffb.invertDirection;
+        node["springStrength"] = ffb.springStrength;
+        node["damperStrength"] = ffb.damperStrength;
+        node["selfAligningTorqueStrength"] = ffb.selfAligningTorqueStrength;
+        node["maxTorqueNormalized"] = ffb.maxTorqueNormalized;
+        node["deadband"] = ffb.deadband;
+        node["slewRatePerSecond"] = ffb.slewRatePerSecond;
+        node["watchdogTimeoutMilliseconds"] = ffb.watchdogTimeout.count();
+        root["forceFeedback"] = node;
     }
 
     return root.dump(2);

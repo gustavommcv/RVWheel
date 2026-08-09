@@ -36,5 +36,12 @@
   "sanityChecks": {
     "expectedButtonCount": 25,
     "expectedPovCount": 1
+  },
+  "forceFeedback": {
+    "enabled": false,
+    "masterGain": 0.3,
+    "springStrength": 0.3,
+    "damperStrength": 0.2,
+    "maxTorqueNormalized": 0.3
   }
 }

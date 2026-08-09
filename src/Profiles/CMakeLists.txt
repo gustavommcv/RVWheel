@@ -24,6 +24,7 @@ target_include_directories(rvwheel_profiles
 target_link_libraries(rvwheel_profiles
     PUBLIC
         rvwheel::dal
+        rvwheel::ffb
     PRIVATE
         nlohmann_json::nlohmann_json
 )

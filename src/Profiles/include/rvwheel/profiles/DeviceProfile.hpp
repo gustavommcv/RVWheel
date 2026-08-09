@@ -7,6 +7,7 @@
 #include "rvwheel/dal/DeviceReadinessPolicy.hpp"
 #include "rvwheel/dal/WheelInputLayout.hpp"
 #include "rvwheel/dal/WheelTypes.hpp"
+#include "rvwheel/ffb/ForceFeedbackTypes.hpp"
 
 namespace rvwheel::profiles {
 
@@ -31,6 +32,14 @@ struct DeviceProfile {
     ProfileMatchCriteria match;
     rvwheel::dal::WheelInputLayout layout;
     rvwheel::dal::DeviceReadinessPolicy readiness;
+
+    // Absent means "no force feedback tuning specified" -- ProfileLoader
+    // never fabricates one, so a profile written before this field existed
+    // (or one that simply omits it) loads exactly as it always has, with
+    // force feedback fully inert. Consumers that care must check
+    // has_value() rather than assuming a default-constructed
+    // ForceFeedbackConfig; see ProfileLoader for the exact JSON shape.
+    std::optional<rvwheel::ffb::ForceFeedbackConfig> forceFeedback;
 
     // Optional sanity-check hints. Never used to reject or weaken a match
     // -- only to flag a mismatch worth telling the user about (e.g. "this

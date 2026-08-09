@@ -33,6 +33,18 @@ the same `profileId`, placed under
   "sanityChecks": {
     "expectedButtonCount": 25,
     "expectedPovCount": 1
+  },
+  "forceFeedback": {
+    "enabled": false,
+    "masterGain": 0.3,
+    "invertDirection": false,
+    "springStrength": 0.3,
+    "damperStrength": 0.2,
+    "selfAligningTorqueStrength": 0.0,
+    "maxTorqueNormalized": 0.3,
+    "deadband": 0.0,
+    "slewRatePerSecond": 2.0,
+    "watchdogTimeoutMilliseconds": 200
   }
 }
 ```
@@ -53,6 +65,14 @@ the same `profileId`, placed under
 - `readiness` times are milliseconds, each between 0 and 60000. If
   `readiness` is omitted entirely, a conservative generic default is used
   instead of zero warmup.
+- `forceFeedback` is entirely optional; omitting it (as every profile did
+  before this field existed) leaves force feedback fully inert. See
+  [docs/FORCE_FEEDBACK.md](../../docs/FORCE_FEEDBACK.md) for what each
+  field does and the current implementation/validation status — as of this
+  writing, force feedback has never been applied to real hardware by this
+  project, regardless of what a profile sets here. `enabled: true` alone
+  does not turn anything on; nothing in the launcher or bridge calls the
+  engine's `Enable()` yet.
 - `sanityChecks` is informational only. A mismatch is reported to the
   user; it never blocks or weakens a match.
 
