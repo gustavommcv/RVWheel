@@ -20,15 +20,23 @@ Working and validated:
 - guided calibration with continuous 60 Hz acquisition and stable-window sampling for unknown devices;
 - standalone `rvwheel_device_probe` for listing, monitoring, capturing, calibrating, and hosting the live bridge;
 - native `rvwheel_launcher` for one-click mod sync, bridge supervision, and Steam game startup;
-- 186 unit tests passing in Release at the latest local validation;
+- 221 unit tests passing in Release at the latest local validation;
 - Logitech G923 (`046D:C266`) detected on real hardware with 25 buttons, one POV, three pedal axes, steering, and reported FFB capability.
 - playable UE4SS integration validated with steering, throttle, brake, clutch,
   Logitech H-pattern gears 1–5, neutral, and reverse.
-- force feedback infrastructure (safety controller, mixer, profile-configured
-  spring/damper source, `--ffb-simulate` diagnostic) implemented and unit
-  tested, exercised end-to-end against real G923 capability detection in
-  simulation mode only — **no force has ever been applied to real
-  hardware**; see [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md).
+- an opt-in force feedback path: `rvwheel_device_probe --bridge --enable-force-feedback`
+  runs the profile-configured centering spring through the real safety
+  controller, holding exclusive DirectInput access without disrupting the
+  bridge's normal input publishing. The underlying spring/safety-controller
+  mechanism was validated on a real G923 (weak spring, masterGain/
+  springStrength 0.2, slew rate 0.5/s) across multiple consecutive runs in
+  both foreground and background DirectInput cooperative levels, and the
+  bridge integration itself (readiness-gated activation, bounded
+  `--duration`, confirmed stop) has now passed one standalone physical run
+  end-to-end — see [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md). Off by
+  default, requires two independent explicit opt-ins (the CLI flag and the
+  profile's own `forceFeedback.enabled`), and does **not** yet react to
+  speed, terrain, or collisions — no vehicle telemetry feeds it.
 
 Still required before this is a polished installable mod:
 
@@ -36,9 +44,11 @@ Still required before this is a polished installable mod:
 - move game/button mappings into user-facing profile controls;
 - package UE4SS and the launcher into a polished end-user installer;
 - validate multiplayer behavior;
-- wire vehicle telemetry from Lua into the force feedback engine, then run the
-  [gated hardware test procedure](docs/FORCE_FEEDBACK_HARDWARE_TEST.md) before
-  ever enabling force feedback for real.
+- wire vehicle telemetry from Lua into the force feedback engine so effects
+  can react to actual driving, not just a static centering spring; the
+  launcher does not enable force feedback automatically yet, and a wheel
+  reconnect currently requires restarting the bridge while
+  `--enable-force-feedback` is active.
 
 See [the G923 hardware baseline](docs/hardware/G923_DIRECTINPUT_CAPTURE.md) for measured behavior and unresolved findings.
 
@@ -159,9 +169,16 @@ After a Release build:
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --ffb-simulate --duration 10
 ```
 
-The probe never applies force feedback: `--ffb-simulate` computes and prints
-force feedback commands using an in-process recording sink, never the real
-device (see [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md)). Hardware captures (`*.jsonl`) are local diagnostic artifacts and are ignored by Git; derived, reviewed findings belong under `docs/hardware/`.
+`--ffb-simulate` computes and prints force feedback commands using an
+in-process recording sink, never the real device — always safe. Plain
+`--bridge` (no extra flag) also never applies force feedback, exactly as
+before this feature existed. Only `--bridge --enable-force-feedback` sends
+real force, and only when the resolved profile also has
+`forceFeedback.enabled: true` — see
+[docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md) for the exact command, the
+two required opt-ins, and the physical safety procedure. Hardware captures
+(`*.jsonl`) are local diagnostic artifacts and are ignored by Git; derived,
+reviewed findings belong under `docs/hardware/`.
 
 For the manually validated UE4SS installation and current limitations, see
 [the first in-game test](docs/game-integration/UE4SS_FIRST_TEST.md) and the

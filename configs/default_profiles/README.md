@@ -36,14 +36,14 @@ the same `profileId`, placed under
   },
   "forceFeedback": {
     "enabled": false,
-    "masterGain": 0.3,
+    "masterGain": 0.2,
     "invertDirection": false,
-    "springStrength": 0.3,
-    "damperStrength": 0.2,
+    "springStrength": 0.2,
+    "damperStrength": 0.0,
     "selfAligningTorqueStrength": 0.0,
-    "maxTorqueNormalized": 0.3,
+    "maxTorqueNormalized": 0.2,
     "deadband": 0.0,
-    "slewRatePerSecond": 2.0,
+    "slewRatePerSecond": 0.5,
     "watchdogTimeoutMilliseconds": 200
   }
 }
@@ -68,11 +68,20 @@ the same `profileId`, placed under
 - `forceFeedback` is entirely optional; omitting it (as every profile did
   before this field existed) leaves force feedback fully inert. See
   [docs/FORCE_FEEDBACK.md](../../docs/FORCE_FEEDBACK.md) for what each
-  field does and the current implementation/validation status — as of this
-  writing, force feedback has never been applied to real hardware by this
-  project, regardless of what a profile sets here. `enabled: true` alone
-  does not turn anything on; nothing in the launcher or bridge calls the
-  engine's `Enable()` yet.
+  field does and the current implementation/validation status.
+  `enabled: true` alone does not turn anything on: `--bridge` also requires
+  the separate `--enable-force-feedback` runtime flag, off by default, and
+  even then only the profile-configured spring/damper is applied (no
+  telemetry-derived effect exists yet). The G923's own `masterGain`/
+  `springStrength`/`maxTorqueNormalized`/`slewRatePerSecond` values of
+  `0.2`/`0.2`/`0.2`/`0.5` in this file are not arbitrary — they are the
+  exact values physically validated in
+  [docs/FORCE_FEEDBACK_HARDWARE_TEST.md](../../docs/FORCE_FEEDBACK_HARDWARE_TEST.md)'s
+  incident log (matching the constants `RunFfbHardwareTestWeakEffect` uses
+  internally). Do not raise any of them, or flip a shipped profile's
+  `enabled` to `true`, without a matching gated hardware validation entry;
+  `damperStrength` stays at `0.0` because damper was not validated across
+  consecutive runs after the exclusive-access fix.
 - `sanityChecks` is informational only. A mismatch is reported to the
   user; it never blocks or weakens a match.
 

@@ -419,6 +419,65 @@ foreground-focused pass. This is still only the weak-spring/damper
 diagnostic; it does **not** validate vehicle telemetry, gameplay
 integration, or any gain/effect beyond what was actually tested here.
 
+### Bridge integration first physical test
+
+All prior entries above exercised the standalone `--ffb-hw-test-*`
+diagnostics only. This entry is the first physical test of the actual
+`--bridge --enable-force-feedback` integration path
+(`BridgeForceFeedbackSession`), run after a hardening pass added: an
+optional `--duration` bound so the run does not depend solely on Ctrl+C;
+gating `Enable()` on the device reporting `connected && valid &&
+readiness == Ready` (instead of arming immediately once the profile
+resolved); a structured, observable result from `Stop()`
+(`BridgeForceFeedbackStopResult`) instead of a discarded one; and
+correcting the shipped profile's `slewRatePerSecond` to the actually
+-validated `0.5` (it had been left at the struct default `2.0`, never
+itself physically tested). Before this run: Debug and Release both
+rebuilt clean, 221/221 tests passing in both, `--ffb-simulate` and
+`--list` reconfirmed safe/read-only, `git diff --check` clean.
+
+**2026-08-09 — Bridge, limited duration, weak spring (gain=0.2, slew=0.5/s):
+technical and physical pass.** A profile copy with
+`forceFeedback.enabled: true` and the validated values (`masterGain`/
+`springStrength`/`maxTorqueNormalized` = `0.2`, `damperStrength` = `0.0`,
+`slewRatePerSecond` = `0.5`, `watchdogTimeoutMilliseconds` = `200`) was
+placed under an isolated `--profiles-dir` outside the repository
+(`$env:TEMP\RVWheel-ffb-test\profiles`), never touching the real
+`%LOCALAPPDATA%\RVWheel\profiles` or the shipped built-in JSON (which
+still ships with `enabled: false`). Exact command:
+
+```powershell
+.\build\tools\device_probe\Release\rvwheel_device_probe.exe --bridge --enable-force-feedback --profiles-dir "C:\Users\gugam\AppData\Local\Temp\RVWheel-ffb-test\profiles" --duration 5 --rate 60
+```
+
+`[dal-info] Initial Acquire() succeeded with EXCLUSIVE | BACKGROUND`
+printed once. `Force feedback: armed (...)` printed immediately, followed
+by the one-time `waiting for the device to report connected+valid+Ready`
+message -- the operator then moved and released one wheel axis, and only
+then did `Force feedback: device readiness reached; engine ENABLED.`
+print, confirming the new readiness gate actually deferred `Enable()`
+rather than arming at profile-resolution time.
+`[dal-info] GetForceFeedbackState` showed the expected
+`ACTUATORSOFF|EMPTY|POWERON` -> `ACTUATORSON|POWERON` transition. No fault
+was reported at any point. After 5.0s, the run stopped itself
+(`Stopping bridge (requested --duration elapsed)...`) without any Ctrl+C —
+the new `--duration` path. `Force feedback engine stop signal: yes`,
+`Final StopForceFeedback(): Ok`, exit code `0`. 300 polls at 60 Hz over
+~5s, 0 publish failures. The operator (hands on the wheel throughout)
+reported: resistance appeared **light**, stayed **stable** for the
+duration, and stopped with **nothing abnormal** afterward.
+
+**Conclusion for this specific test**: the hardened bridge integration
+(readiness-gated `Enable()`, bounded `--duration`, confirmed `Stop()`)
+behaves correctly end-to-end on real hardware for the same weak-spring
+diagnostic already validated standalone, now delivered through
+`--bridge` while input kept publishing normally throughout. This is one
+run, one operator, one device, `springStrength` only (`damperStrength`
+still `0.0`, still unvalidated); it does **not** validate multiple
+consecutive runs through the bridge specifically, reconnect behavior, a
+fault-recovery path in this integration, or anything inside the actual
+game/UE4SS mod.
+
 ## Recording results
 
 For each step, record: date, exact command/config used, hardware

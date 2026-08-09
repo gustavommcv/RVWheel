@@ -92,6 +92,15 @@ install, or UE4SS installation is required for the test suite.
 .\build\tools\launcher\Release\rvwheel_launcher.exe
 ```
 
+`--bridge --enable-force-feedback` applies real force to the wheel and is
+**not** a routine development command -- it requires a profile with a
+physically-validated `forceFeedback.enabled: true` block, exclusive
+DirectInput access, and the gated, explicitly-authorized procedure in
+[docs/FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md). Do
+not add it to a routine dev loop or a script; `--ffb-simulate` (always
+safe, never touches the real device) is the right tool for iterating on
+force feedback logic during development.
+
 The Release build output under `build\tools\launcher\Release\` is already
 laid out like a distribution package (launcher, bridge, mod, default
 profiles side by side) — see [RELEASING.md](RELEASING.md) for turning that

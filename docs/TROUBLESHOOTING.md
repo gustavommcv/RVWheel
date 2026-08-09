@@ -89,11 +89,46 @@ and remove or fix the one you did not intend to use.
 
 ## My wheel doesn't vibrate / has no force feedback
 
-This is expected today, on every wheel, regardless of its capabilities.
-Force feedback's infrastructure exists and is unit-tested, but no code path
-in the launcher or bridge ever enables it, and no telemetry source feeds it
-— see [FORCE_FEEDBACK.md](FORCE_FEEDBACK.md) for the exact status. This is
-not a bug to report; it is documented, deliberate, unfinished work.
+This is expected by default, on every wheel, regardless of its
+capabilities. The launcher never enables force feedback, and plain
+`--bridge` (no extra flag) never applies it either — see
+[FORCE_FEEDBACK.md](FORCE_FEEDBACK.md) for the exact status. This is not a
+bug to report; it is documented, deliberate, unfinished work: even the one
+implemented effect (a centering spring) does not yet react to speed,
+terrain, or collisions, because no vehicle telemetry feeds it.
+
+There is now an opt-in path (`rvwheel_device_probe --bridge
+--enable-force-feedback`), but it requires two independent things to both
+be true, and if either is missing you get input-only behavior with no
+force and no crash:
+
+1. the CLI flag `--enable-force-feedback` was actually passed to the
+   probe/bridge (the launcher does not pass it, and never does so
+   automatically);
+2. the *resolved* profile has its own `forceFeedback.enabled: true` block
+   with valid values. The shipped `logitech-g923-ps-pc-directinput.json`
+   ships with `enabled: false` even though its numeric values are
+   physically validated — flipping that flag is a separate, deliberate
+   decision documented in
+   [configs/default_profiles/README.md](../configs/default_profiles/README.md).
+
+If you passed the flag and still feel nothing, check the bridge's console
+output: it prints explicitly whether force feedback ended up ENABLED or
+fell back to input-only, and why.
+
+### Force feedback stopped after unplugging/replugging the wheel
+
+This is a known current limitation, not a regression: a bridge session
+running with `--enable-force-feedback` holds exclusive DirectInput access
+and deliberately stops its periodic device re-enumeration while that
+session is active (re-enumerating while force feedback is engaged is what
+caused a real `DIERR_NOTEXCLUSIVEACQUIRED` bug in earlier testing — see
+[FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md)). If the
+wheel disconnects and reconnects, you must close and restart the bridge
+(or the whole probe process) to pick it up again; it will not recover the
+exclusive force feedback session on its own. Input-only `--bridge` (no
+force feedback flag) is unaffected — it keeps its normal periodic refresh
+and handles reconnects without a restart.
 
 ## No Steam / no game / no UE4SS / no wheel at all
 

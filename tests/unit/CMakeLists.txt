@@ -17,6 +17,8 @@ include(Catch)
 set(_rvwheel_probe_test_sources "")
 if(TARGET rvwheel_device_probe_core)
     list(APPEND _rvwheel_probe_test_sources
+        BridgeForceFeedbackSessionTests.cpp
+        BridgePoliciesTests.cpp
         DeviceProbeParsingTests.cpp
         DeviceProbeFormattingTests.cpp
         BridgeStateFormatterTests.cpp

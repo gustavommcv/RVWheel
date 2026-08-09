@@ -177,7 +177,7 @@ RVW2 <seq> <connected> <valid> <steering> <throttle> <brake> <clutch> <VID_hex> 
 | Area | Alternatives considered | Decision | Trade-off |
 |---|---|---|---|
 | Native/game IPC | Named pipe, shared memory, TCP loopback | Atomically-replaced text file under `%LOCALAPPDATA%` | Simplest to implement correctly from Lua (plain `io.open`), trivially inspectable/debuggable by hand, no listener lifecycle to manage; costs one file-write per tick and depends on the OS file cache rather than a true IPC primitive. A future revision could move to a shared-memory ring buffer if per-tick file I/O ever measurably matters. |
-| DirectInput access mode | Exclusive (`DISCL_EXCLUSIVE`) for force feedback | Non-exclusive, background (`DISCL_NONEXCLUSIVE \| DISCL_BACKGROUND`) | Lets G HUB and the game read the same device concurrently; defers force feedback (which needs exclusive access) to a separate, explicitly unvalidated milestone. |
+| DirectInput access mode | Exclusive (`DISCL_EXCLUSIVE`) for force feedback | Non-exclusive, background (`DISCL_NONEXCLUSIVE \| DISCL_BACKGROUND`) by default; exclusive only when `--enable-force-feedback` explicitly requests it | Lets G HUB and the game read the same device concurrently in the default (input-only) path. Exclusive FFB access, once requested, must never coexist with periodic device re-enumeration — a `DeviceManager` refresh racing an active exclusive effect was a confirmed real bug (see [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md)), now fixed by disabling re-enumeration for the run's duration once FFB is requested. |
 | Vendor SDK dependency | Require Logitech SDK for all builds | `RVWHEEL_ENABLE_LOGITECH_SDK` optional, default `OFF`; DirectInput covers all currently supported hardware | Keeps CI and default developer builds free of a proprietary dependency; anyone building with vendor-specific features must opt in explicitly. |
 | Device-specific logic placement | VID/PID branches inside the DAL/backend | JSON device profiles (axis/readiness) + a Lua VID:PID table (H-pattern gears) | Adding a wheel is a data change (profile JSON) plus, for non-standard controls like an H-pattern shifter, a small Lua table entry — never a DAL/backend recompile. |
 | Mod packaging | UE4SS-specific packaging tooling | Plain directory copy + `mods.txt` line management, matching the manual install flow UE4SS itself documents | Matches what a player would do by hand, so the launcher's install path and the documented manual-install path in [docs/game-integration/UE4SS_FIRST_TEST.md](game-integration/UE4SS_FIRST_TEST.md) never diverge. |
@@ -219,8 +219,11 @@ deterministically in CI, with no physical wheel attached.
   installs it separately (see [docs/INSTALL.md](INSTALL.md)) because
   redistributing a third-party loader alongside this project would blur
   license and support boundaries that are cleaner left separate.
-- Force feedback's safety/effect/mixer infrastructure is implemented and
-  unit-tested, but no telemetry source feeds it yet and no force has ever
-  been applied to real hardware — see [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md).
+- Force feedback has a real, opt-in path (`rvwheel_device_probe --bridge
+  --enable-force-feedback`), physically validated on a real G923 for a
+  static centering spring, but no telemetry source feeds it yet (no
+  self-aligning torque, terrain, or collision effects), the launcher does
+  not enable it automatically, and reconnecting the wheel mid-session
+  requires restarting the bridge — see [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md).
 - Only the Logitech G923 (VID `046D` PID `C266`) plus its attached H-pattern
   shifter has a verified profile and Lua gear mapping today.

@@ -4,6 +4,7 @@
 # the core lib, without duplicating main() or depending on a hidden window
 # / console being creatable in a test run.
 add_library(rvwheel_device_probe_core STATIC
+    BridgeForceFeedbackSession.cpp
     BridgeStateFormatter.cpp
     CalibrationWizard.cpp
     CliOptions.cpp
@@ -17,9 +18,10 @@ add_library(rvwheel_device_probe_core STATIC
 target_compile_features(rvwheel_device_probe_core PUBLIC cxx_std_20)
 target_include_directories(rvwheel_device_probe_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # PUBLIC: ProbeFormatting.hpp (a public header of this target) includes
-# rvwheel/profiles/ProfileResolver.hpp to format ProfileOrigin, so anything
-# linking this target's headers needs rvwheel::profiles too.
-target_link_libraries(rvwheel_device_probe_core PUBLIC rvwheel::dal rvwheel::profiles)
+# rvwheel/profiles/ProfileResolver.hpp to format ProfileOrigin, and
+# BridgeForceFeedbackSession.hpp includes rvwheel/ffb/ForceFeedbackEngine.hpp,
+# so anything linking this target's headers needs both too.
+target_link_libraries(rvwheel_device_probe_core PUBLIC rvwheel::dal rvwheel::profiles rvwheel::ffb)
 
 if(MSVC)
     target_compile_options(rvwheel_device_probe_core PRIVATE /W4 /permissive-)

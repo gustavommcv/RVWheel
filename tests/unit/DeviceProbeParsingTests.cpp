@@ -37,16 +37,38 @@ TEST_CASE("CliParser: --monitor accepts explicit duration and rate", "[DevicePro
     REQUIRE(result.options.rateHz == 30);
 }
 
-TEST_CASE("CliParser: --bridge runs indefinitely and accepts rate/profile", "[DeviceProbe][CliParser][Bridge]") {
+TEST_CASE("CliParser: --bridge runs indefinitely by default (no bridgeDuration set) and accepts rate/profile",
+          "[DeviceProbe][CliParser][Bridge]") {
     const auto result = CliParser::Parse({L"--bridge", L"--rate", L"120", L"--profile", L"wheel-profile"});
     REQUIRE(result.success);
     REQUIRE(result.options.mode == ProbeMode::Bridge);
     REQUIRE(result.options.rateHz == 120);
     REQUIRE(result.options.profileSelector == L"wheel-profile");
+    REQUIRE_FALSE(result.options.bridgeDuration.has_value());
 }
 
-TEST_CASE("CliParser: --bridge rejects duration", "[DeviceProbe][CliParser][Bridge][Invalid]") {
-    REQUIRE_FALSE(CliParser::Parse({L"--bridge", L"--duration", L"10"}).success);
+TEST_CASE("CliParser: --bridge --duration bounds the run, in the same [1, 3600]s range as other modes",
+          "[DeviceProbe][CliParser][Bridge]") {
+    const auto result = CliParser::Parse({L"--bridge", L"--duration", L"5"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::Bridge);
+    REQUIRE(result.options.bridgeDuration.has_value());
+    REQUIRE(*result.options.bridgeDuration == std::chrono::seconds{5});
+}
+
+TEST_CASE("CliParser: --bridge --duration --enable-force-feedback combine (the limited physical test invocation)",
+          "[DeviceProbe][CliParser][Bridge][FFB]") {
+    const auto result = CliParser::Parse({L"--bridge", L"--enable-force-feedback", L"--duration", L"5"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.enableForceFeedback);
+    REQUIRE(result.options.bridgeDuration.has_value());
+    REQUIRE(*result.options.bridgeDuration == std::chrono::seconds{5});
+}
+
+TEST_CASE("CliParser: --bridge --duration rejects out-of-range values like every other mode",
+          "[DeviceProbe][CliParser][Bridge][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--bridge", L"--duration", L"0"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--bridge", L"--duration", L"3601"}).success);
 }
 
 TEST_CASE("CliParser: --ffb-simulate accepts duration/rate/profile like --monitor", "[DeviceProbe][CliParser][FfbSimulate]") {
@@ -143,6 +165,25 @@ TEST_CASE("CliParser: --effect rejects an unknown value and only applies to --ff
           "[DeviceProbe][CliParser][FfbHardwareTest][Invalid]") {
     REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-weak-effect", L"--effect", L"nonsense"}).success);
     REQUIRE_FALSE(CliParser::Parse({L"--list", L"--effect", L"spring"}).success);
+}
+
+TEST_CASE("CliParser: --bridge --enable-force-feedback parses and sets the flag", "[DeviceProbe][CliParser][Bridge][FFB]") {
+    const auto result = CliParser::Parse({L"--bridge", L"--enable-force-feedback"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::Bridge);
+    REQUIRE(result.options.enableForceFeedback);
+}
+
+TEST_CASE("CliParser: --bridge without --enable-force-feedback leaves it false", "[DeviceProbe][CliParser][Bridge][FFB]") {
+    const auto result = CliParser::Parse({L"--bridge"});
+    REQUIRE(result.success);
+    REQUIRE_FALSE(result.options.enableForceFeedback);
+}
+
+TEST_CASE("CliParser: --enable-force-feedback is rejected outside --bridge", "[DeviceProbe][CliParser][FFB][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--list", L"--enable-force-feedback"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--monitor", L"--enable-force-feedback"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-simulate", L"--enable-force-feedback"}).success);
 }
 
 TEST_CASE("CliParser: --bridge accepts a launcher parent process", "[DeviceProbe][CliParser][Bridge]") {

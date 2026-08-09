@@ -17,6 +17,8 @@
 #include <windows.h>
 
 #include "CalibrationWizard.hpp"
+#include "BridgeForceFeedbackSession.hpp"
+#include "BridgePolicies.hpp"
 #include "BridgeStateFormatter.hpp"
 #include "CaptureWriter.hpp"
 #include "ConsoleRenderer.hpp"
@@ -220,6 +222,18 @@ struct AppliedProfileInfo {
     std::string profileId;
     ProfileOrigin origin = ProfileOrigin::Unconfigured;
     std::string reason;
+
+    // The actually-applied profile's own forceFeedback block, carried
+    // forward directly from whichever DeviceProfile ApplyLayout() was
+    // called with (below) -- never re-derived by searching mergedProfiles
+    // for profileId again. ProfileRepository::MergeProfiles() collapses a
+    // built-in and a same-profileId user override into ONE entry (the user
+    // one wins outright; there is no second, built-in candidate to fall
+    // back to), so a second lookup by profileId alone would either be
+    // redundant or, for a --profile <path> override pointing outside the
+    // merged set entirely, silently miss the override's own block. Absent
+    // whenever no profile was actually applied to the device.
+    std::optional<rvwheel::ffb::ForceFeedbackConfig> forceFeedback;
 };
 
 enum class CalibrationConsoleKey {
@@ -313,6 +327,7 @@ private:
         }
         info.profileId = overrideResult.profile.profileId;
         info.origin = overrideResult.isUserProfile ? ProfileOrigin::UserProfile : ProfileOrigin::BuiltInProfile;
+        info.forceFeedback = overrideResult.profile.forceFeedback;
         info.reason = "Forced via --profile.";
         return info;
     }
@@ -332,6 +347,12 @@ private:
             info.reason += " (ApplyLayout failed unexpectedly: " + applyStatus.Message() + ")";
             info.origin = ProfileOrigin::Unconfigured;
             device.ApplyLayout(WheelInputLayout{}, DeviceReadinessPolicy{});
+        } else if (resolution.profile) {
+            // ProvisionalFallback never carries a DeviceProfile (see
+            // ProfileResolution::profile's doc comment), so it can never
+            // reach here with forceFeedback set -- an unverified generic
+            // axis guess must never arm force feedback.
+            info.forceFeedback = resolution.profile->forceFeedback;
         }
     } else {
         // AmbiguousMatch / InvalidExactMatch / Unconfigured: never guess.
@@ -1016,7 +1037,15 @@ int DeviceProbeApp::RunBridge() {
         return 1;
     }
 
-    auto manager = CreateManager(window);
+    // --enable-force-feedback requests exclusive DirectInput access up
+    // front, before the profile (and therefore any forceFeedback config)
+    // is even known -- see the ordering note below. This mirrors the
+    // gated hardware test's own CreateManager call exactly, including the
+    // cooperative level (EXCLUSIVE | BACKGROUND) validated there.
+    auto manager = options_.enableForceFeedback
+                       ? CreateManager(window, /*requestExclusiveForceFeedbackAccess=*/true,
+                                       rvwheel::dal::ForceFeedbackCooperativeLevel::Background)
+                       : CreateManager(window);
     manager->RefreshIfDue();
     window.PumpMessages();
 
@@ -1046,6 +1075,61 @@ int DeviceProbeApp::RunBridge() {
               << "Rate:    " << options_.rateHz << " Hz\n\n"
               << "Move a wheel axis once if readiness is AwaitingActivation. Press Ctrl+C to stop safely.\n";
 
+    // Two independent gates, both required: this flag (runtime) and the
+    // resolved profile's own forceFeedback.enabled (data). Neither alone
+    // is sufficient, and this integration never substitutes a
+    // demonstration config the way --ffb-simulate does -- an absent or
+    // disabled block simply means no force feedback this run, input-only,
+    // exactly like a plain --bridge invocation. profileInfo.forceFeedback
+    // is the actually-applied profile's own block, carried forward by
+    // ResolveAndApplyProfile -- see AppliedProfileInfo's doc comment for
+    // why this is not re-derived by searching for profileId a second time.
+    //
+    // Deliberately NOT calling Enable() here: the engine is only armed
+    // once the device has actually reported connected+valid+Ready (inside
+    // the loop below), never merely because a profile happened to resolve.
+    std::unique_ptr<BridgeForceFeedbackSession> ffbSession;
+    if (options_.enableForceFeedback) {
+        if (profileInfo.forceFeedback && profileInfo.forceFeedback->enabled) {
+            ffbSession = std::make_unique<BridgeForceFeedbackSession>(*device, *profileInfo.forceFeedback);
+            std::cout << "Force feedback: armed (profile \"" << profileInfo.profileId
+                      << "\", masterGain=" << profileInfo.forceFeedback->masterGain
+                      << ", springStrength=" << profileInfo.forceFeedback->springStrength
+                      << ", damperStrength=" << profileInfo.forceFeedback->damperStrength
+                      << ", slewRatePerSecond=" << profileInfo.forceFeedback->slewRatePerSecond
+                      << "). Exclusive DirectInput access is held for the rest of this run; periodic device "
+                      << "re-enumeration is disabled while it is (see docs/FORCE_FEEDBACK_HARDWARE_TEST.md). "
+                      << "Reconnecting the wheel requires restarting the bridge in this first version.\n"
+                      << "Force feedback: waiting for the device to report connected+valid+Ready before enabling "
+                      << "the engine. Input keeps publishing normally in the meantime; no force is applied until "
+                      << "readiness is actually observed.\n";
+        } else {
+            std::cout << "Force feedback: --enable-force-feedback was passed, but the resolved profile \""
+                      << (profileInfo.profileId.empty() ? "(none)" : profileInfo.profileId)
+                      << "\" has no forceFeedback.enabled=true block. Running input-only this session -- no "
+                         "demonstration/fallback configuration is ever substituted. Exclusive DirectInput access is "
+                         "still held (requested up front), so periodic re-enumeration remains disabled.\n";
+        }
+    }
+    bool ffbEnabledOnceReady = false;
+
+    // --duration is optional and OFF by default for --bridge: std::nullopt
+    // preserves the exact prior infinite-until-Ctrl+C behavior. Only when
+    // explicitly given does the loop below stop itself once the deadline
+    // passes, through the same graceful shutdown path Ctrl+C already
+    // takes -- see CliOptions::bridgeDuration.
+    const std::optional<std::chrono::steady_clock::time_point> bridgeDeadline =
+        options_.bridgeDuration ? std::optional<std::chrono::steady_clock::time_point>(
+                                       std::chrono::steady_clock::now() + *options_.bridgeDuration)
+                                 : std::nullopt;
+    const auto durationElapsed = [&]() noexcept {
+        return bridgeDeadline.has_value() && std::chrono::steady_clock::now() >= *bridgeDeadline;
+    };
+    if (bridgeDeadline) {
+        std::cout << "Duration: stopping automatically after " << options_.bridgeDuration->count()
+                  << " s, through the same graceful shutdown path Ctrl+C takes.\n";
+    }
+
     const auto frameInterval =
         std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / options_.rateHz));
     auto nextTick = std::chrono::steady_clock::now();
@@ -1066,13 +1150,41 @@ int DeviceProbeApp::RunBridge() {
         return parentProcess == nullptr || WaitForSingleObject(parentProcess, 0) == WAIT_TIMEOUT;
     };
 
-    while (!stopRequested_.load() && parentIsAlive()) {
+    while (!stopRequested_.load() && parentIsAlive() && !durationElapsed()) {
         window.PumpMessages();
-        manager->RefreshIfDue();
+        // Never re-enumerate while exclusive force-feedback access is held
+        // (requested whenever --enable-force-feedback was passed, whether
+        // or not a session actually armed) -- a second exclusive Acquire of
+        // the same physical device is the confirmed root cause fixed in
+        // docs/FORCE_FEEDBACK_HARDWARE_TEST.md's incident log, and this
+        // bridge integration must not reintroduce it. ShouldRefreshDuringBridge
+        // is a pure function of this run's flag alone, never of the
+        // session's live state, so a session ending/faulting can never
+        // flip this back on mid-run -- see BridgePolicies.hpp.
+        if (rvwheel::tools::probe::ShouldRefreshDuringBridge(options_.enableForceFeedback)) {
+            manager->RefreshIfDue();
+        }
         const Status pollStatus = device->Poll();
         ++polls;
 
         const auto& state = device->State();
+
+        if (ffbSession && !ffbEnabledOnceReady &&
+            rvwheel::tools::probe::IsReadyToEnableForceFeedback(pollStatus.IsOk(), state)) {
+            ffbSession->Enable();
+            ffbEnabledOnceReady = true;
+            std::cout << "Force feedback: device readiness reached; engine ENABLED.\n";
+        }
+
+        if (ffbSession) {
+            const bool wasFaulted = ffbSession->IsFaulted();
+            ffbSession->Tick(std::chrono::steady_clock::now());
+            if (!wasFaulted && ffbSession->IsFaulted()) {
+                std::cerr << "Force feedback backend faulted; continuing input-only for the rest of this run "
+                             "(no automatic re-arm).\n";
+            }
+        }
+
         const auto& capabilities = device->Info().capabilities;
         BridgeStateRecord record{};
         record.sequence = ++bridgeSequence;
@@ -1110,14 +1222,45 @@ int DeviceProbeApp::RunBridge() {
         }
     }
 
+    const bool stoppedByDuration = durationElapsed();
+    std::cout << "\nStopping bridge (" << (stoppedByDuration ? "requested --duration elapsed"
+                                            : stopRequested_.load() ? "Ctrl+C"
+                                                                     : "supervised parent process exited")
+              << ")...\n";
+
+    // Explicit stop on every exit path this loop can take (Ctrl+C, parent
+    // process gone, duration elapsed, or -- since ffbSession is destroyed
+    // further down regardless -- this call is defense in depth, not the
+    // only stop). BridgeForceFeedbackSession::Stop() is idempotent, so
+    // calling it here and again implicitly via the destructor below is
+    // safe; this explicit call is the one whose result is actually
+    // reported and checked below.
+    bool ffbStopConfirmed = true; // No session armed => nothing to confirm; exit code unaffected by FFB.
+    if (ffbSession) {
+        const BridgeForceFeedbackStopResult stopResult = ffbSession->Stop();
+        std::cout << "Force feedback engine stop signal: " << (stopResult.engineStopRequested ? "yes" : "no")
+                  << "\n";
+        std::cout << "Final StopForceFeedback(): " << FormatStatusCode(stopResult.explicitStopStatus.Code());
+        if (!stopResult.explicitStopStatus.Message().empty()) {
+            std::cout << " (" << stopResult.explicitStopStatus.Message() << ")";
+        }
+        std::cout << "\n";
+        ffbStopConfirmed = stopResult.Confirmed();
+        if (!ffbStopConfirmed) {
+            std::cerr << "Force feedback stop was NOT confirmed -- treat the wheel as potentially still under "
+                         "force until physically verified, and investigate before the next run.\n";
+        }
+    }
+
     BridgeStateRecord stopped{};
     stopped.sequence = ++bridgeSequence;
     static_cast<void>(WriteBridgeStateAtomically(bridgePath, stopped));
     if (parentProcess != nullptr) {
         CloseHandle(parentProcess);
     }
-    std::cout << "\nBridge stopped safely after " << polls << " polls (" << writeFailures << " publish failures).\n";
-    return 0;
+    std::cout << "\nBridge stopped after " << polls << " polls (" << writeFailures << " publish failures); "
+              << (ffbStopConfirmed ? "shutdown confirmed safe.\n" : "shutdown NOT confirmed safe -- see above.\n");
+    return ffbStopConfirmed ? 0 : 1;
 }
 
 int DeviceProbeApp::RunCapture() {
@@ -1269,15 +1412,11 @@ int DeviceProbeApp::RunFfbSimulate() {
 
     rvwheel::ffb::ForceFeedbackConfig config;
     std::string configSource;
-    bool foundConfig = false;
-    for (const auto& entry : repo.MergedProfiles()) {
-        if (entry.profile.profileId == profileInfo.profileId && entry.profile.forceFeedback) {
-            config = *entry.profile.forceFeedback;
-            foundConfig = true;
-            break;
-        }
-    }
-    if (!foundConfig) {
+    const bool foundConfig = profileInfo.forceFeedback.has_value();
+    if (foundConfig) {
+        config = *profileInfo.forceFeedback;
+        configSource = "resolved from profile \"" + profileInfo.profileId + "\"";
+    } else {
         // A demonstration-only config so the tool visibly produces
         // something even with no forceFeedback block resolved. This is
         // safe precisely because SimulatedForceFeedbackSink below makes it
@@ -1288,8 +1427,6 @@ int DeviceProbeApp::RunFfbSimulate() {
         config.springStrength = 0.3f;
         config.damperStrength = 0.2f;
         configSource = "no forceFeedback block resolved on this profile; using a built-in demonstration config";
-    } else {
-        configSource = "resolved from profile \"" + profileInfo.profileId + "\"";
     }
 
     std::cout << "=== RVWheel Force Feedback SIMULATION MODE ===\n"

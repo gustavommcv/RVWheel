@@ -5,6 +5,7 @@
 #include "rvwheel/profiles/ProfileRepository.hpp"
 
 using rvwheel::dal::DeviceBackend;
+using rvwheel::ffb::ForceFeedbackConfig;
 using rvwheel::profiles::DeviceProfile;
 using rvwheel::profiles::ProfileRepository;
 
@@ -32,6 +33,65 @@ TEST_CASE("ProfileRepository::MergeProfiles: a user profile overrides a built-in
     REQUIRE(merged.size() == 1);
     REQUIRE(merged[0].isUserProfile);
     REQUIRE(merged[0].profile.displayName == "user override version");
+}
+
+TEST_CASE("ProfileRepository::MergeProfiles: a same-profileId user override with NO forceFeedback block "
+          "yields no config -- it never falls back to the built-in's block",
+          "[ProfileRepository][Precedence][ForceFeedback]") {
+    std::vector<DeviceProfile> builtIn{MakeProfile("shared-id")};
+    ForceFeedbackConfig builtInFfb;
+    builtInFfb.enabled = true;
+    builtInFfb.masterGain = 0.2f;
+    builtIn[0].forceFeedback = builtInFfb;
+
+    std::vector<DeviceProfile> user{MakeProfile("shared-id")};
+    user[0].forceFeedback = std::nullopt;
+
+    const auto merged = ProfileRepository::MergeProfiles(builtIn, user);
+    REQUIRE(merged.size() == 1); // One entry, not two candidates to search across.
+    REQUIRE(merged[0].isUserProfile);
+    REQUIRE_FALSE(merged[0].profile.forceFeedback.has_value());
+}
+
+TEST_CASE("ProfileRepository::MergeProfiles: a same-profileId user override WITH its own forceFeedback "
+          "block is used exactly, not merged/blended with the built-in's",
+          "[ProfileRepository][Precedence][ForceFeedback]") {
+    std::vector<DeviceProfile> builtIn{MakeProfile("shared-id")};
+    ForceFeedbackConfig builtInFfb;
+    builtInFfb.enabled = false;
+    builtInFfb.masterGain = 0.9f; // Deliberately different from the user's, to prove no blending occurs.
+    builtIn[0].forceFeedback = builtInFfb;
+
+    std::vector<DeviceProfile> user{MakeProfile("shared-id")};
+    ForceFeedbackConfig userFfb;
+    userFfb.enabled = true;
+    userFfb.masterGain = 0.2f;
+    userFfb.springStrength = 0.2f;
+    user[0].forceFeedback = userFfb;
+
+    const auto merged = ProfileRepository::MergeProfiles(builtIn, user);
+    REQUIRE(merged.size() == 1);
+    REQUIRE(merged[0].isUserProfile);
+    REQUIRE(merged[0].profile.forceFeedback.has_value());
+    REQUIRE(merged[0].profile.forceFeedback->enabled);
+    REQUIRE(merged[0].profile.forceFeedback->masterGain == 0.2f);
+    REQUIRE(merged[0].profile.forceFeedback->springStrength == 0.2f);
+}
+
+TEST_CASE("ProfileRepository::MergeProfiles: a built-in's forceFeedback block survives untouched when "
+          "there is no user override at all",
+          "[ProfileRepository][Precedence][ForceFeedback]") {
+    std::vector<DeviceProfile> builtIn{MakeProfile("builtin-only")};
+    ForceFeedbackConfig builtInFfb;
+    builtInFfb.enabled = false;
+    builtInFfb.masterGain = 0.2f;
+    builtIn[0].forceFeedback = builtInFfb;
+
+    const auto merged = ProfileRepository::MergeProfiles(builtIn, {});
+    REQUIRE(merged.size() == 1);
+    REQUIRE_FALSE(merged[0].isUserProfile);
+    REQUIRE(merged[0].profile.forceFeedback.has_value());
+    REQUIRE(merged[0].profile.forceFeedback->masterGain == 0.2f);
 }
 
 TEST_CASE("ProfileRepository::MergeProfiles: an unmatched user profile is appended, not dropped",

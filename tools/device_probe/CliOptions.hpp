@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -75,6 +76,28 @@ struct CliOptions {
     // valid top-level but deliberately invisible/unfocused window in the
     // first experiment; it still never creates an effect in stop-only mode.
     FfbTestCooperativeLevel ffbTestCooperativeLevel = FfbTestCooperativeLevel::Background;
+
+    // --bridge --enable-force-feedback: the runtime gate for the bridge's
+    // first real force feedback integration. False (default) preserves
+    // --bridge's exact existing behavior (no force, NONEXCLUSIVE |
+    // BACKGROUND, periodic refresh). This is one of two independent gates
+    // -- see BridgeForceFeedbackSession and RunBridge -- the resolved
+    // profile's own forceFeedback.enabled must ALSO be true before any
+    // force is ever applied.
+    bool enableForceFeedback = false;
+
+    // --bridge --duration <seconds>: an optional, explicit bound on how
+    // long --bridge runs before stopping itself through the exact same
+    // graceful shutdown path Ctrl+C already takes (EmergencyStop,
+    // StopForceFeedback, final state write). std::nullopt (the default)
+    // preserves --bridge's existing infinite-until-Ctrl+C behavior exactly
+    // -- this field is only ever set when --duration is explicitly given
+    // alongside --bridge, so a first real force-feedback test does not
+    // have to depend solely on an operator's own Ctrl+C timing. Distinct
+    // from `duration` above (which always has a concrete default and is
+    // used by --monitor/--capture/--ffb-simulate) precisely so bridge's
+    // "unbounded by default" behavior can be represented at all.
+    std::optional<std::chrono::seconds> bridgeDuration;
 };
 
 struct CliParseResult {

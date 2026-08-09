@@ -60,7 +60,8 @@ std::string CliParser::UsageText() {
            "  rvwheel_device_probe --calibrate [--output <profile.json>]\n"
            "  rvwheel_device_probe --monitor [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
            "  rvwheel_device_probe --capture <path.jsonl> [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
-           "  rvwheel_device_probe --bridge [--rate <hz>] [--profile <id-or-path>]\n"
+           "  rvwheel_device_probe --bridge [--rate <hz>] [--profile <id-or-path>] [--enable-force-feedback]\n"
+           "                              [--duration <seconds>]\n"
            "  rvwheel_device_probe --ffb-simulate [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
            "  rvwheel_device_probe --ffb-hw-test-stop-only\n"
            "                              [--ffb-cooperative-level background|foreground|foreground-focused]\n"
@@ -69,6 +70,11 @@ std::string CliParser::UsageText() {
            "\n"
            "Options:\n"
            "  --duration <seconds>   How long --monitor/--capture/--ffb-simulate run. Range [1, 3600], default 30.\n"
+           "                         For --bridge specifically, this is OPTIONAL and OFF by default: --bridge\n"
+           "                         alone still runs until Ctrl+C exactly as before. Only when explicitly given\n"
+           "                         does --bridge stop itself after the given number of seconds, through the\n"
+           "                         exact same graceful shutdown path (EmergencyStop/StopForceFeedback/final\n"
+           "                         state write) Ctrl+C already takes.\n"
            "  --rate <hz>            Tick rate for --monitor/--capture/--bridge/--ffb-simulate. Range [1, 250], default 60.\n"
            "  --profile <id-or-path> Force a specific profile (by profileId or a .json path) instead of automatic\n"
            "                         resolution. Only valid with --monitor/--capture/--bridge/--ffb-simulate.\n"
@@ -85,10 +91,19 @@ std::string CliParser::UsageText() {
            "                         Hardware-test-only DirectInput exclusive access policy. Default background\n"
            "                         preserves prior behavior. Foreground uses a top-level but invisible/unfocused\n"
            "                         diagnostic window; foreground-focused shows and activates a small tool window.\n"
+           "  --enable-force-feedback\n"
+           "                         Only valid with --bridge. Off by default. Requests EXCLUSIVE | BACKGROUND and\n"
+           "                         arms the profile-configured spring/damper source, but ONLY if the resolved\n"
+           "                         profile's own forceFeedback.enabled is also true -- this flag alone is never\n"
+           "                         sufficient. See docs/FORCE_FEEDBACK.md.\n"
            "\n"
            "Notes:\n"
-           "  - Hardware is re-enumerated at most once every 5 seconds; not configurable here.\n"
-           "  - Force feedback is never applied by --list/--monitor/--capture/--bridge/--calibrate.\n"
+           "  - Hardware is re-enumerated at most once every 5 seconds; not configurable here, EXCEPT that\n"
+           "    --bridge --enable-force-feedback disables periodic re-enumeration entirely while its exclusive\n"
+           "    force-feedback session is active, matching the invariant validated in\n"
+           "    docs/FORCE_FEEDBACK_HARDWARE_TEST.md (re-enumerating during an active exclusive effect was the\n"
+           "    confirmed root cause of an earlier hardware failure).\n"
+           "  - Force feedback is never applied by --list/--monitor/--capture/--calibrate, nor by plain --bridge.\n"
            "  - --ffb-simulate computes and prints force feedback commands using the resolved profile's\n"
            "    forceFeedback config, but ALWAYS routes them to an in-process recording sink -- it never calls\n"
            "    ApplyForceFeedback/StopForceFeedback on the real device, so no actuator is ever driven by it.\n"
@@ -99,7 +114,8 @@ std::string CliParser::UsageText() {
            "  - --ffb-hw-test-weak-effect is a REAL hardware test: it applies ONE real, weak (gain 0.2) effect\n"
            "    for a fixed 5 seconds via the real ForceFeedbackSafetyController, then stops. Only run this\n"
            "    after --ffb-hw-test-stop-only has passed, per docs/FORCE_FEEDBACK_HARDWARE_TEST.md.\n"
-           "  - --bridge runs until Ctrl+C and publishes the latest safe input snapshot under LOCALAPPDATA.\n"
+           "  - --bridge runs until Ctrl+C (or, if --duration was explicitly given, until that many seconds\n"
+           "    elapse) and publishes the latest safe input snapshot under LOCALAPPDATA.\n"
            "  - Exactly one of --help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/\n"
            "    --ffb-hw-test-stop-only/--ffb-hw-test-weak-effect must be given.\n";
 }
@@ -119,6 +135,7 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     bool parentPidSet = false;
     bool effectSet = false;
     bool ffbCooperativeLevelSet = false;
+    bool enableForceFeedbackSet = false;
     long long durationSeconds = kDefaultDurationSeconds;
     long long rateHz = kDefaultRateHz;
     long long parentProcessId = 0;
@@ -215,6 +232,8 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
                 return Fail("--ffb-cooperative-level must be \"background\", \"foreground\", or \"foreground-focused\".");
             }
             ffbCooperativeLevelSet = true;
+        } else if (arg == L"--enable-force-feedback") {
+            enableForceFeedbackSet = true;
         } else if (arg == L"--capture") {
             if (modeSet) {
                 return Fail(kConflictingModeMessage);
@@ -304,8 +323,8 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     }
 
     if (durationSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture &&
-        result.options.mode != ProbeMode::FfbSimulate) {
-        return Fail("--duration only applies to --monitor, --capture, and --ffb-simulate.");
+        result.options.mode != ProbeMode::FfbSimulate && result.options.mode != ProbeMode::Bridge) {
+        return Fail("--duration only applies to --monitor, --capture, --bridge, and --ffb-simulate.");
     }
     if (rateSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture &&
         result.options.mode != ProbeMode::Bridge && result.options.mode != ProbeMode::FfbSimulate) {
@@ -328,8 +347,18 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
         result.options.mode != ProbeMode::FfbHardwareTestWeakEffect) {
         return Fail("--ffb-cooperative-level only applies to real FFB hardware-test modes.");
     }
+    if (enableForceFeedbackSet && result.options.mode != ProbeMode::Bridge) {
+        return Fail("--enable-force-feedback only applies to --bridge.");
+    }
 
     result.options.duration = std::chrono::seconds{durationSeconds};
+    if (durationSet && result.options.mode == ProbeMode::Bridge) {
+        // --bridge is the one mode where "no --duration given" must mean
+        // "run forever", not "run for the default 30s" -- so the bounded
+        // case is represented separately from `duration` above instead of
+        // reusing its always-has-a-value default.
+        result.options.bridgeDuration = std::chrono::seconds{durationSeconds};
+    }
     result.options.rateHz = static_cast<int>(rateHz);
     result.options.parentProcessId = static_cast<std::uint32_t>(parentProcessId);
     result.options.capturePath = std::move(capturePath);
@@ -338,6 +367,7 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     result.options.profileSelector = std::move(profileSelector);
     result.options.ffbTestEffect = effect;
     result.options.ffbTestCooperativeLevel = ffbCooperativeLevel;
+    result.options.enableForceFeedback = enableForceFeedbackSet;
     result.success = true;
     return result;
 }

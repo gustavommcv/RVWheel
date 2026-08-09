@@ -58,6 +58,9 @@ public:
     rvwheel::dal::Status StopForceFeedback() noexcept override {
         ++stopForceFeedbackCallCount;
         callLog.push_back("StopForceFeedback");
+        if (persistentStopForceFeedbackFailure) {
+            return *persistentStopForceFeedbackFailure;
+        }
         if (nextStopForceFeedbackFailure) {
             const rvwheel::dal::Status failure = *nextStopForceFeedbackFailure;
             nextStopForceFeedbackFailure.reset();
@@ -76,6 +79,14 @@ public:
 
     std::optional<rvwheel::dal::Status> nextApplyForceFeedbackFailure;
     std::optional<rvwheel::dal::Status> nextStopForceFeedbackFailure;
+
+    // Unlike nextStopForceFeedbackFailure (single-shot), this fails EVERY
+    // subsequent StopForceFeedback() call once set -- needed to simulate a
+    // backend that is genuinely broken across more than one call in a row,
+    // e.g. a caller (ForceFeedbackEngine) that makes its own internal
+    // StopForceFeedback() call before a second, explicit follow-up call
+    // reaches the same device.
+    std::optional<rvwheel::dal::Status> persistentStopForceFeedbackFailure;
 
 private:
     rvwheel::dal::DeviceInfo info_;

@@ -1,26 +1,21 @@
 # Force Feedback
 
 > [!IMPORTANT]
-> Force feedback is **still not a finished feature**, but the
-> `DIERR_NOTEXCLUSIVEACQUIRED` failure that made every early real-hardware
-> run of the weak spring/damper diagnostic fail after ~2 seconds is now
-> **root-caused and fixed**: `DeviceManager`'s periodic 5-second refresh was
-> re-enumerating and exclusively re-acquiring a duplicate of the same
-> physical device while the diagnostic's own instance still held the
-> effect, revoking its exclusivity. It was never about G HUB, a firmware
-> watchdog, or foreground vs background. With re-enumeration disabled while
-> an exclusive effect is active, the weak-spring diagnostic has now passed
-> technically and physically in **`DISCL_EXCLUSIVE | DISCL_FOREGROUND`
-> (focused) and, across two consecutive authorized runs,
-> `DISCL_EXCLUSIVE | DISCL_BACKGROUND`** — the mode a production bridge
-> would actually use while the game stays in the foreground. **No unsafe
-> motion was reported in any run across either session.** This still only
-> validates the isolated diagnostic, not vehicle telemetry, gameplay
-> integration, or the production `--bridge` loop. See the **Incident log**
-> in [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md) and
+> Force feedback is **still not a finished feature**, but `--bridge` now has
+> a real, opt-in force feedback path: `rvwheel_device_probe --bridge
+> --enable-force-feedback` arms the profile-configured centering spring
+> through the exact same safety controller and exclusive-access handling
+> validated by the gated hardware tests (see the **Incident log** in
+> [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md)). It is
+> off by default and requires two independent opt-ins (the CLI flag and the
+> profile's own `forceFeedback.enabled`). It applies only a static
+> centering spring/damper — **no telemetry, no reaction to speed, terrain,
+> or collisions**, and no other wheel model or gain level has been tried.
+> The launcher does not enable this automatically. See
 > [docs/research/FORCE_FEEDBACK_FEASIBILITY.md](research/FORCE_FEEDBACK_FEASIBILITY.md)
-> before doing anything else with real hardware. Do not enable
-> `forceFeedback.enabled` in a profile expecting a finished feature.
+> for the full history. Do not raise the validated gain values or flip a
+> shipped profile's `enabled` to `true` without a matching gated hardware
+> validation entry.
 
 ## Status at a glance
 
@@ -34,7 +29,8 @@
 | Profile-configured spring/damper source | Implemented, unit-tested; ran a full stable 5s window on real hardware across multiple runs, see Incident log |
 | Telemetry-derived self-aligning torque | **Not implemented** — see [Limitations](#limitations) |
 | Simulation mode (`--ffb-simulate`) | Implemented, exercised against real hardware in read-only/simulated form |
-| Real force applied to a device | Weak spring/damper diagnostic (gain 0.2) now runs a full stable 5s window with a clean stop, confirmed across several runs in foreground-focused and background modes; no unsafe motion reported in any run. **Still not the same as validating production/gameplay FFB** — see Limitations |
+| Real force applied to a device | Weak spring/damper diagnostic (gain 0.2) now runs a full stable 5s window with a clean stop, confirmed across several runs in foreground-focused and background modes; no unsafe motion reported in any run |
+| `--bridge --enable-force-feedback` | Implemented: two independent gates (CLI flag + profile `forceFeedback.enabled`), readiness-gated `Enable()`, optional `--duration` bound, confirmed/observable `Stop()`, disables periodic re-enumeration while active. Physically validated once on a real G923 (weak spring, 5s bounded run, clean `engine ENABLED` after readiness and confirmed stop) -- see the "Bridge integration first physical test" entry in [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md). Manual in-game validation still pending -- see [Limitations](#limitations) |
 
 ## Architecture
 
@@ -82,8 +78,13 @@ never knows what a "source" is).
   pass through, with no bypass.
 - **`ForceFeedbackEngine`** — the only class that knows about all the
   others; ties a safety controller, a mixer, and a list of sources to a
-  real `IWheelDevice`, and is what `--ffb-simulate` and (eventually) the
-  bridge's live loop both drive.
+  real `IWheelDevice`. Driven by `--ffb-simulate` (through a recording
+  sink), the gated hardware-test modes, and now `--bridge
+  --enable-force-feedback` via `BridgeForceFeedbackSession`
+  ([`BridgeForceFeedbackSession.hpp`](../tools/device_probe/BridgeForceFeedbackSession.hpp)),
+  a small RAII wrapper that arms the engine once, ticks it every bridge
+  frame with the device's own current steering (no telemetry), and
+  guarantees exactly one stop on every exit path.
 - **`DirectInputDevice`** — owns the actual `IDirectInputEffect` objects;
   see [`DirectInputDevice.cpp`](../src/Devices/DirectInput/src/DirectInputDevice.cpp).
   Nothing above this layer ever sees a `DIEFFECT` or a `GUID_ConstantForce`.
@@ -131,11 +132,86 @@ exactly as before (`forceFeedback` is `std::nullopt`, force feedback fully
 inert) — see `ProfileLoader`'s tests for the exact backward-compatibility
 guarantee.
 
-`forceFeedback.enabled: true` is necessary but not sufficient: the runtime
-must also call `ForceFeedbackEngine::Enable()` explicitly (nothing in the
-launcher or bridge does this yet), and `hasForceFeedback` being reported by
-a device is a capability, not proof every effect type actually works on
-that unit — see [Limitations](#limitations).
+`forceFeedback.enabled: true` is necessary but not sufficient: `--bridge`
+also requires the separate `--enable-force-feedback` runtime flag (off by
+default) before it ever calls `ForceFeedbackEngine::Enable()` — see
+[Bridge integration](#bridge-integration) below. The launcher does not pass
+this flag, so a normal player run of `rvwheel_launcher.exe` never enables
+force feedback regardless of profile content. `hasForceFeedback` being
+reported by a device is also only a capability, not proof every effect type
+actually works on that unit — see [Limitations](#limitations).
+
+## Bridge integration
+
+`rvwheel_device_probe --bridge --enable-force-feedback [--profile <id-or-path>] [--duration <seconds>]`
+is the first place force feedback can run outside a diagnostic mode. Two
+independent gates must both be satisfied before any force is ever applied:
+
+1. the `--enable-force-feedback` CLI flag (runtime, off by default);
+2. the resolved profile's own `forceFeedback.enabled: true` (data, off by
+   default in every shipped profile).
+
+Passing the flag alone requests `DISCL_EXCLUSIVE | DISCL_BACKGROUND` access
+up front (before the profile is even resolved, since a device must be found
+before its profile can be), so exclusive access is held for the rest of the
+run even if the profile turns out to lack a valid `forceFeedback` block --
+in that case the bridge logs why and simply runs input-only, exactly like a
+plain `--bridge` invocation. **No demonstration/fallback configuration is
+ever substituted** the way `--ffb-simulate` substitutes one; either the
+profile's real config is used, or nothing is armed. That config is the
+resolved profile's own block, carried forward directly from whichever
+`DeviceProfile` was actually applied to the device (see
+`AppliedProfileInfo::forceFeedback` in `DeviceProbeApp.cpp`) --
+`ProfileRepository::MergeProfiles()` collapses a built-in and a
+same-`profileId` user override into exactly one entry (the user profile
+replaces the built-in outright; there is no second, built-in candidate to
+fall back to), so a bridge session never re-derives this by searching for
+`profileId` a second time.
+
+Even once armed, `BridgeForceFeedbackSession::Enable()` is **not** called
+immediately after the profile resolves. The bridge waits until a `Poll()`
+succeeds and the device reports `connected == true`, `valid == true`, and
+`readiness == Ready` (see `IsReadyToEnableForceFeedback` in
+`BridgePolicies.hpp`) before calling `Enable()` -- input keeps publishing
+normally while it waits, and if readiness never arrives, the engine is
+simply never enabled and no force is ever applied.
+
+While a force feedback session is active, `--bridge` **never calls
+`DeviceManager::RefreshIfDue()`** — see `ShouldRefreshDuringBridge` in
+[`BridgePolicies.hpp`](../tools/device_probe/BridgePolicies.hpp) and the
+invariant explained in
+[FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md)'s
+incident log: periodic re-enumeration racing an active exclusive effect was
+the confirmed root cause of the original `DIERR_NOTEXCLUSIVEACQUIRED`
+failure. This decision depends only on whether `--enable-force-feedback`
+was passed for the run, never on the session's live state (armed, active,
+faulted, stopped) -- a session ending or faulting mid-run can never flip
+refresh back on. One consequence: **reconnecting the wheel while
+`--enable-force-feedback` is active requires restarting the bridge
+process** in this first version, since the bridge will not rediscover a
+new device instance.
+
+`BridgeForceFeedbackSession::Stop()` returns a `BridgeForceFeedbackStopResult`
+(the safety controller's own stop decision plus the `Status` of an explicit,
+belt-and-suspenders `StopForceFeedback()` call) rather than discarding the
+outcome -- `RunBridge()` prints `Final StopForceFeedback(): Ok` (or the
+failing `StatusCode`/message) and **returns a non-zero exit code if the
+stop was not confirmed**, so a caller (a script, or an operator reading the
+console) never has to assume the stop worked. This runs on every exit path:
+normal loop exit, `--duration` elapsing, the supervised parent process
+disappearing, Ctrl+C, and — via the session's own destructor, best-effort
+and `noexcept` — any other unwind, including an exception. A backend fault
+(e.g. a repeat of the `DIERR_NOTEXCLUSIVEACQUIRED` failure) logs once, stops
+force feedback, and lets the bridge keep publishing input normally for the
+rest of the run; nothing automatically re-arms it.
+
+`--duration <seconds>`, when explicitly given alongside `--bridge`, stops
+the bridge automatically after that many seconds through this exact same
+graceful shutdown sequence, instead of relying solely on an operator's own
+Ctrl+C timing -- this is the mechanism the first real physical test uses
+(see [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md)).
+Omitting it preserves `--bridge`'s exact prior infinite-until-Ctrl+C
+behavior, with or without `--enable-force-feedback`.
 
 ## Safety
 
@@ -208,6 +284,7 @@ rvwheel_device_probe.exe --list           # Prints hasForceFeedback per device (
 rvwheel_device_probe.exe --ffb-simulate [--duration <s>] [--rate <hz>] [--profile <id-or-path>]
 rvwheel_device_probe.exe --ffb-hw-test-stop-only --ffb-cooperative-level foreground
 rvwheel_device_probe.exe --ffb-hw-test-stop-only --ffb-cooperative-level foreground-focused
+rvwheel_device_probe.exe --bridge --enable-force-feedback [--profile <id-or-path>] [--duration <s>]  # REAL force; see below.
 ```
 
 `--ffb-simulate` resolves the device's profile (or a conservative built-in
@@ -219,21 +296,25 @@ all against an in-process recording sink, never the real device. See
 [`DeviceProbeApp.cpp`](../tools/device_probe/DeviceProbeApp.cpp) for the
 structural (not just behavioral) guarantee behind that claim.
 
-The final command is a gated real-hardware diagnostic, not a simulation.
-It creates no effect and starts no force, but it does request exclusive
-DirectInput access and calls the real stop path once. Its foreground mode
-uses a valid process-owned top-level window that is deliberately invisible
-and unfocused for the first experiment. Run it only with explicit operator
-authorization and the procedure in
+The `--ffb-hw-test-*` commands are gated real-hardware diagnostics, not
+simulations. `--ffb-hw-test-stop-only` creates no effect and starts no
+force, but it does request exclusive DirectInput access and calls the real
+stop path once. `--bridge --enable-force-feedback` is the one command in
+this list that applies real, sustained force -- see
+[Bridge integration](#bridge-integration) above. Run any of these only
+with explicit operator authorization and the procedure in
 [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md).
 
 ## How to disable force feedback entirely
 
-It already is, by default, in every shipped profile. If you have generated
-or hand-written a profile with `forceFeedback.enabled: true`, either delete
-that block or set it back to `false` — no code change is needed, since
-nothing in the launcher or bridge calls `ForceFeedbackEngine::Enable()` yet
-regardless of profile content.
+It already is, by default: plain `rvwheel_launcher.exe` and plain
+`--bridge` (no extra flag) never call `ForceFeedbackEngine::Enable()`,
+regardless of profile content, and every shipped profile ships with
+`forceFeedback.enabled: false`. If you specifically ran `--bridge
+--enable-force-feedback` and want to stop, close the bridge process (Ctrl+C
+or closing the window) — `BridgeForceFeedbackSession`'s destructor
+guarantees a stop on the way out. To make a profile permanently inert
+again, delete its `forceFeedback` block or set `enabled` back to `false`.
 
 ## How to contribute support for a new wheel's force feedback
 
@@ -252,17 +333,41 @@ regardless of profile content.
 
 - No telemetry-derived effect (self-aligning torque, collision impulses,
   terrain/engine vibration) is implemented; only a profile-configured
-  spring/damper baseline exists.
+  spring/damper baseline exists. `--bridge --enable-force-feedback` applies
+  a static centering spring regardless of speed, steering angle, terrain,
+  or collisions -- it does not "feel" the game in any way yet.
 - No Lua-side telemetry capture exists; `VehicleTelemetry` has no real
-  producer yet.
-- Nothing in the launcher or bridge calls `ForceFeedbackEngine::Enable()`;
-  the engine is currently only reachable via `--ffb-simulate`.
-- Real weak spring/damper diagnostics have been applied to one G923 under
-  explicit per-run authorization and now run a full stable 5-second window
-  with a clean stop, in both foreground-focused and background cooperative
-  levels (see the hardware test incident log). This validates the isolated
-  diagnostic only -- no production/gameplay FFB path is enabled, nothing in
-  the launcher or bridge calls `ForceFeedbackEngine::Enable()`, and no other
-  wheel model or gain level has been tried.
+  producer. `BridgeForceFeedbackSession` always ticks the engine with an
+  empty `VehicleTelemetry`.
+- The launcher does not pass `--enable-force-feedback`; a normal player run
+  never enables force feedback regardless of profile content. This is a
+  deliberate, not-yet-implemented next step, not an oversight.
+- Reconnecting the wheel while `--enable-force-feedback` is active requires
+  restarting the bridge process in this first version -- periodic
+  re-enumeration is disabled for the whole run once exclusive access is
+  requested, so a physical unplug/replug is not rediscovered.
+- Only the Logitech G923's `masterGain`/`springStrength`/
+  `maxTorqueNormalized` at `0.2` and `slewRatePerSecond` at `0.5` have been
+  physically validated (see the hardware test incident log, and
+  `RunFfbHardwareTestWeakEffect`'s own fixed constants in
+  `DeviceProbeApp.cpp`, which the shipped profile's values must always
+  match); `damperStrength` stays at `0.0` in the shipped profile because
+  damper was not validated across consecutive runs after the
+  exclusive-access fix. No other wheel model has been tried, no gain above
+  `0.2` has been tried, and no slew rate faster than `0.5`/s has been
+  tried -- raising it is a separate validation step, not a "probably fine"
+  tuning change.
+- The shipped G923 profile ships with `forceFeedback.enabled: false`, so
+  `--enable-force-feedback` alone does nothing against the default
+  profile; a real end-to-end manual test needs a profile override with
+  `enabled: true` -- see [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md).
 - Only DirectInput's condition/constant-force effect types are wired;
   periodic effects (sine, square, etc.) and envelopes are not implemented.
+- The game has not been opened with `--enable-force-feedback` active yet.
+  The bridge-level integration itself has now been physically validated
+  once, standalone (weak spring, 5s bounded run via `--duration`, clean
+  `engine ENABLED` after readiness, confirmed stop) -- see the "Bridge
+  integration first physical test" entry in
+  [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md). This
+  is one run outside the game; it does not validate the mod/UE4SS path,
+  multiple consecutive runs, or reconnect behavior.
