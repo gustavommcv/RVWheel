@@ -41,8 +41,8 @@ pedal released/pressed, using continuous sampling
 stable 500 ms window before accepting a value, specifically because some
 wheels (the G923 included) report a transient placeholder value for up to a
 few seconds after power-up. See
-[docs/prompts/005-calibration-continuous-sampling.md](prompts/005-calibration-continuous-sampling.md)
-for the full root-cause writeup if you are curious why this matters.
+[G923_DIRECTINPUT_CAPTURE.md](hardware/G923_DIRECTINPUT_CAPTURE.md)'s
+addenda for the measured startup transient this design accounts for.
 
 At the end, the wizard writes a candidate profile JSON under
 `%LOCALAPPDATA%\RVWheel\profiles\`. Review it before trusting it:

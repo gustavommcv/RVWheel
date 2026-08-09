@@ -46,3 +46,9 @@ CMakeUserPresets.json
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Agent-to-agent handoff prompts (docs/prompts/00N-*.md). Kept locally as a
+# working record between coding sessions, but deliberately excluded from the
+# published repository so the public history/tree only contains what a
+# human developer needs to continue the project.
+/docs/prompts/
