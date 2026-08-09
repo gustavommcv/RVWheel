@@ -146,3 +146,20 @@ gating, readiness, axis normalization, continuous polling, all four driving axes
 H-pattern shifter for this G923. The same setup subsequently passed a playable in-game test for
 steering, throttle, brake, clutch-gated forward gears 1–5, neutral, and reverse. Force feedback
 remains a separate, unvalidated milestone.
+
+### Evidence files for this addendum
+
+Two local, gitignored (`*.jsonl`) capture files back the two measurements above and are kept
+alongside the repository for anyone re-running this validation:
+
+- `g923-activation-gate.jsonl` — 300 samples over ~5 s. Every sample reports
+  `readinessState=AwaitingActivation`, `valid=false`, and the untouched placeholder
+  `throttle=brake=clutch=0.500008`. This is the raw data behind the "300/300 AwaitingActivation
+  samples, zero valid samples" claim above.
+- `g923-post-calibration.jsonl` — 300 samples over ~5 s captured immediately after calibration,
+  pedals left untouched. It shows the readiness state machine advancing on its own timing:
+  `WarmingUp` from `t=0ms`, `Stabilizing` from `t=3000ms`, and `Ready` (with `valid` flipping to
+  `true`) from `t=3501ms`. Because the pedals were not pressed during this specific capture, the
+  values stay at the `0.500008` placeholder throughout; it demonstrates state-machine timing only,
+  not pedal travel. Real pedal travel to `~0.0` at rest is documented separately in the final
+  15-second Release run described above.
