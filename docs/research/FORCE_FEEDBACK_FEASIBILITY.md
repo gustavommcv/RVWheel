@@ -256,18 +256,22 @@ new, unresolved open question and two real bugs (now fixed) in RVWheel's
 own code — see the hardware test doc's Incident Log for full detail. The
 new open question:
 
-5. **Why did `IDirectInputEffect::SetParameters`/`Stop` start failing with
-   a generic error after roughly two seconds of a real, weak spring effect
-   running?** Not reproduced with HRESULT-level diagnostics yet (those were
-   added after this run, in response to it). Candidate hypotheses, none
-   confirmed: (a) `DirectInputDevice::Poll()`'s own `DIERR_INPUTLOST`
-   recovery path re-acquiring the device in a way that invalidates
-   previously created effects; (b) G HUB or Windows periodically
-   renegotiating access to a device this project has never held exclusively
-   before; (c) an interaction with the two extra, unrequested zero-magnitude
-   effects the first bug above caused to be created (now fixed, which may
-   or may not have been contributing). Do not assume any of these without
-   reproducing with the improved diagnostics.
+5. **Why did `IDirectInputEffect::SetParameters`/`Stop` start failing after
+   roughly two seconds of a real, weak spring effect running? Partially
+   answered.** Reproduced on a second run with HRESULT diagnostics in
+   place: the failure is `0x80040205` = `DIERR_NOTEXCLUSIVEACQUIRED` --
+   the device's acquisition was downgraded from exclusive to nonexclusive
+   partway through, at a similar elapsed time in both runs, independent of
+   the unrequested-extra-effects bug (which was already fixed for the
+   second run, ruling out hypothesis (c) below). **What remains open is
+   *why* the acquisition is downgraded.** Leading hypothesis: Logitech
+   G HUB (confirmed installed and presumably running on the test machine)
+   renegotiates access to the device on its own schedule and, in doing so,
+   causes this project's exclusive acquisition to be replaced with a
+   nonexclusive one. Not yet tested with G HUB closed. Hypothesis (a) --
+   `DirectInputDevice::Poll()`'s own reacquire-on-input-loss path
+   contributing -- is also not ruled out, since input polling continued
+   throughout both runs.
 
 ## Risks carried forward into implementation
 

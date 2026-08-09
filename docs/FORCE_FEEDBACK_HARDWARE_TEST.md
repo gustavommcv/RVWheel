@@ -128,15 +128,31 @@ Two real bugs were found and fixed from this single run, before any retest:
    `spring * gain` product never exceeds its final steady-state value
    during ramp-up, at any slew rate.
 
-**Root cause of the t≈2.0s `SetParameters`/`Stop` failure is not yet
-confirmed.** `DirectInputDevice`'s error messages now include the raw
-HRESULT (they did not during this run), so a future attempt will produce a
-diagnosable error instead of a generic one. Do not retest on real hardware
-until this is understood well enough to have a specific hypothesis to
-check, or until the operator explicitly decides to retest anyway with the
-improved diagnostics to gather more data. This project treats "it seemed
-fine after we fixed something else" as insufficient evidence to declare a
-hardware-facing bug resolved.
+**2026-08-09 — Step 6 retest (weak spring, with HRESULT diagnostics and
+both fixes above applied): reproduced.** Same device, same command. Gain
+now correctly ramped up from 0 in lockstep with spring (the overshoot bug
+above did not recur), and only the spring effect was created (the
+unrequested constant-force/damper effects were no longer created). Around
+the same ~2 second mark, `SetParameters` started failing again, now with a
+specific, confirmed HRESULT: **`0x80040205` = `DIERR_NOTEXCLUSIVEACQUIRED`
+("The device is acquired, but not exclusively")**. The final
+`StopForceFeedback()` also failed with `BackendError` for the same reason:
+`IDirectInputEffect::Stop`/`SendForceFeedbackCommand` both require
+exclusive acquisition per Microsoft's own documentation, so once
+exclusivity is lost, this project's software-level stop calls cannot
+succeed either. **No unsafe motion was reported after this run either**;
+the wheel returned to G HUB's own idle behavior.
+
+**Working hypothesis (not yet confirmed): Logitech G HUB is renegotiating
+access to the device a few seconds after this project acquires it
+exclusively, downgrading our acquisition to nonexclusive.** This is
+consistent with both runs failing at a similar elapsed time, and with G HUB's
+own idle behavior being what the operator observed afterward in both cases
+-- plausible if G HUB manages the device's FFB state through a path other
+than pure DirectInput and reasserts it once it regains any level of access.
+This has not been tested by closing G HUB first; that is the next useful,
+low-risk diagnostic (does not require applying force) before any further
+weak-effect attempt.
 
 ## Recording results
 
