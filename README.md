@@ -20,10 +20,15 @@ Working and validated:
 - guided calibration with continuous 60 Hz acquisition and stable-window sampling for unknown devices;
 - standalone `rvwheel_device_probe` for listing, monitoring, capturing, calibrating, and hosting the live bridge;
 - native `rvwheel_launcher` for one-click mod sync, bridge supervision, and Steam game startup;
-- 138 unit tests passing in Release at the latest local validation;
+- 186 unit tests passing in Release at the latest local validation;
 - Logitech G923 (`046D:C266`) detected on real hardware with 25 buttons, one POV, three pedal axes, steering, and reported FFB capability.
 - playable UE4SS integration validated with steering, throttle, brake, clutch,
   Logitech H-pattern gears 1–5, neutral, and reverse.
+- force feedback infrastructure (safety controller, mixer, profile-configured
+  spring/damper source, `--ffb-simulate` diagnostic) implemented and unit
+  tested, exercised end-to-end against real G923 capability detection in
+  simulation mode only — **no force has ever been applied to real
+  hardware**; see [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md).
 
 Still required before this is a polished installable mod:
 
@@ -31,7 +36,9 @@ Still required before this is a polished installable mod:
 - move game/button mappings into user-facing profile controls;
 - package UE4SS and the launcher into a polished end-user installer;
 - validate multiplayer behavior;
-- validate force feedback safely on real hardware.
+- wire vehicle telemetry from Lua into the force feedback engine, then run the
+  [gated hardware test procedure](docs/FORCE_FEEDBACK_HARDWARE_TEST.md) before
+  ever enabling force feedback for real.
 
 See [the G923 hardware baseline](docs/hardware/G923_DIRECTINPUT_CAPTURE.md) for measured behavior and unresolved findings.
 
@@ -41,6 +48,7 @@ See [the G923 hardware baseline](docs/hardware/G923_DIRECTINPUT_CAPTURE.md) for 
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — Windows dev environment setup, build, and test.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the layers fit together, the RVW2 protocol, and design decisions.
 - [docs/ADDING_A_WHEEL.md](docs/ADDING_A_WHEEL.md) — capture, calibrate, and ship a profile for a new device.
+- [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md) — force feedback architecture, safety model, and current status.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common problems and what they mean.
 - [docs/RELEASING.md](docs/RELEASING.md) — building the distributable package.
 
@@ -148,9 +156,12 @@ After a Release build:
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --monitor --duration 30 --rate 60
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --capture wheel-capture.jsonl --duration 30 --rate 60
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --bridge --rate 60
+.\build\tools\device_probe\Release\rvwheel_device_probe.exe --ffb-simulate --duration 10
 ```
 
-The probe never applies force feedback. Hardware captures (`*.jsonl`) are local diagnostic artifacts and are ignored by Git; derived, reviewed findings belong under `docs/hardware/`.
+The probe never applies force feedback: `--ffb-simulate` computes and prints
+force feedback commands using an in-process recording sink, never the real
+device (see [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md)). Hardware captures (`*.jsonl`) are local diagnostic artifacts and are ignored by Git; derived, reviewed findings belong under `docs/hardware/`.
 
 For the manually validated UE4SS installation and current limitations, see
 [the first in-game test](docs/game-integration/UE4SS_FIRST_TEST.md) and the

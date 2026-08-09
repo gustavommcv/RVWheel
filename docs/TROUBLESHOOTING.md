@@ -87,6 +87,14 @@ matching your device fails its own JSON validation. Check
 `%LOCALAPPDATA%\RVWheel\profiles\` for a leftover or duplicate profile file
 and remove or fix the one you did not intend to use.
 
+## My wheel doesn't vibrate / has no force feedback
+
+This is expected today, on every wheel, regardless of its capabilities.
+Force feedback's infrastructure exists and is unit-tested, but no code path
+in the launcher or bridge ever enables it, and no telemetry source feeds it
+— see [FORCE_FEEDBACK.md](FORCE_FEEDBACK.md) for the exact status. This is
+not a bug to report; it is documented, deliberate, unfinished work.
+
 ## No Steam / no game / no UE4SS / no wheel at all
 
 Each of these is a supported, deliberately-non-crashing state:

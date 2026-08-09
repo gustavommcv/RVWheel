@@ -219,6 +219,8 @@ deterministically in CI, with no physical wheel attached.
   installs it separately (see [docs/INSTALL.md](INSTALL.md)) because
   redistributing a third-party loader alongside this project would blur
   license and support boundaries that are cleaner left separate.
-- Force feedback is unimplemented and unvalidated.
+- Force feedback's safety/effect/mixer infrastructure is implemented and
+  unit-tested, but no telemetry source feeds it yet and no force has ever
+  been applied to real hardware — see [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md).
 - Only the Logitech G923 (VID `046D` PID `C266`) plus its attached H-pattern
   shifter has a verified profile and Lua gear mapping today.
