@@ -71,6 +71,15 @@ DirectInputDevice::~DirectInputDevice() {
         if (constantForceEffect_) constantForceEffect_->Stop();
         if (springEffect_) springEffect_->Stop();
         if (damperEffect_) damperEffect_->Stop();
+        // Best-effort, device-wide safety net: covers any effect this
+        // instance did not itself create/track (e.g. left over from a
+        // previous crashed process). Only succeeds under exclusive
+        // acquisition (confirmed via Microsoft's own documentation and
+        // FFConst sample -- see docs/research/FORCE_FEEDBACK_FEASIBILITY.md);
+        // its failure under nonexclusive access is expected and silently
+        // ignored, since the per-effect Stop() calls above are already the
+        // primary mechanism in that case.
+        device_->SendForceFeedbackCommand(DISFFC_STOPALL);
         device_->Unacquire();
     }
 }
@@ -481,6 +490,14 @@ Status DirectInputDevice::StopForceFeedback() noexcept {
             anyFailed = true;
         }
     }
+
+    // Device-wide safety net beyond the effects this instance tracks; see
+    // the destructor's comment. Deliberately not folded into `anyFailed`:
+    // DIERR_NOTEXCLUSIVEACQUIRED here is an expected, harmless outcome
+    // whenever RVWheel is (as by default) running with nonexclusive input
+    // access, not a real force-feedback failure.
+    device_->SendForceFeedbackCommand(DISFFC_STOPALL);
+
     return anyFailed ? Status::BackendError("Failed to stop one or more force feedback effects") : Status::Ok();
 }
 
