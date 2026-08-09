@@ -274,7 +274,8 @@ private:
     return {};
 }
 
-[[nodiscard]] UniqueHandle StartBridge(const std::filesystem::path& launcherExecutable, std::wstring& errorMessage) {
+[[nodiscard]] UniqueHandle StartBridge(const std::filesystem::path& launcherExecutable,
+                                       const LauncherOptions& options, std::wstring& errorMessage) {
     const auto bridge = FindBridgeExecutable(launcherExecutable);
     if (bridge.empty()) {
         errorMessage = L"rvwheel_device_probe.exe não foi encontrado ao lado do launcher.";
@@ -302,9 +303,7 @@ private:
         return {};
     }
 
-    std::wstring commandLine = L"\"" + bridge.wstring() + L"\" --bridge --rate " +
-                               std::to_wstring(kBridgeRateHz) + L" --parent-pid " +
-                               std::to_wstring(GetCurrentProcessId());
+    std::wstring commandLine = BuildBridgeCommandLine(bridge, options, kBridgeRateHz, GetCurrentProcessId());
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
@@ -330,6 +329,28 @@ void ShowError(const std::wstring& message) {
 } // namespace
 
 int RunLauncher() {
+    // Parse and validate the launcher's own opt-in arguments before doing
+    // anything else -- an invalid --enable-force-feedback/--profiles-dir
+    // invocation must fail here, never after Steam/UE4SS/bridge work has
+    // already started. CommandLineToArgvW (not wWinMain's own lpCmdLine)
+    // is used so quoting/escaping matches exactly what the bridge's own
+    // wmain(argc, argv) parses on the other end.
+    int rawArgCount = 0;
+    LPWSTR* rawArgs = CommandLineToArgvW(GetCommandLineW(), &rawArgCount);
+    if (rawArgs == nullptr) {
+        ShowError(L"Não foi possível interpretar a linha de comando do launcher.");
+        return 1;
+    }
+    const std::vector<std::wstring> args(rawArgs + 1, rawArgs + rawArgCount);
+    LocalFree(rawArgs);
+
+    const auto argsResult = ParseLauncherArgs(args);
+    if (!argsResult.success) {
+        ShowError(L"Argumento de linha de comando inválido: " + argsResult.errorMessage);
+        return 1;
+    }
+    const LauncherOptions& options = argsResult.options;
+
     UniqueHandle singleton(CreateMutexW(nullptr, FALSE, L"Local\\RVWheelLauncher"));
     if (!singleton) {
         ShowError(L"Não foi possível inicializar o launcher.");
@@ -357,8 +378,26 @@ int RunLauncher() {
     }
 
     UniqueHandle launchedBridge;
-    if (FindProcessId(kBridgeExecutableFileName) == 0) {
-        launchedBridge = StartBridge(launcherExecutable, errorMessage);
+    if (FindProcessId(kBridgeExecutableFileName) != 0) {
+        // Fail-closed: an already-running bridge could be plain input-only
+        // (started by a prior, argument-less launcher run, or manually).
+        // Silently reusing it when force feedback was explicitly requested
+        // would mean the "armed" state a user expects never actually
+        // happens, with no indication why. Never kill it automatically --
+        // it may be mid-session for another reason -- just say so and stop.
+        if (options.enableForceFeedback) {
+            ShowError(L"Já existe um bridge RVWheel em execução (rvwheel_device_probe.exe) e "
+                      L"--enable-force-feedback foi solicitado. Esse bridge existente pode estar em modo "
+                      L"somente entrada, sem force feedback -- o launcher não o reaproveita nem o encerra "
+                      L"automaticamente. Encerre o processo existente (pelo Gerenciador de Tarefas, ou "
+                      L"fechando o jogo/launcher anterior) e execute novamente.");
+            return 1;
+        }
+        // Plain input-only launch (default behavior, unchanged): reuse the
+        // already-running bridge silently, exactly as before this feature
+        // existed.
+    } else {
+        launchedBridge = StartBridge(launcherExecutable, options, errorMessage);
         if (!launchedBridge) {
             ShowError(errorMessage);
             return 1;

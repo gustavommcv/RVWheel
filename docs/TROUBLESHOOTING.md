@@ -90,21 +90,22 @@ and remove or fix the one you did not intend to use.
 ## My wheel doesn't vibrate / has no force feedback
 
 This is expected by default, on every wheel, regardless of its
-capabilities. The launcher never enables force feedback, and plain
-`--bridge` (no extra flag) never applies it either — see
+capabilities. A plain double-click launcher run (no arguments) and plain
+`--bridge` (no extra flag) never apply it — see
 [FORCE_FEEDBACK.md](FORCE_FEEDBACK.md) for the exact status. This is not a
 bug to report; it is documented, deliberate, unfinished work: even the one
 implemented effect (a centering spring) does not yet react to speed,
 terrain, or collisions, because no vehicle telemetry feeds it.
 
-There is now an opt-in path (`rvwheel_device_probe --bridge
---enable-force-feedback`), but it requires two independent things to both
-be true, and if either is missing you get input-only behavior with no
-force and no crash:
+There is now an opt-in path, reachable either directly
+(`rvwheel_device_probe --bridge --enable-force-feedback`) or through the
+launcher (`rvwheel_launcher --enable-force-feedback [--profiles-dir
+<path>]`), but it requires two independent things to both be true, and if
+either is missing you get input-only behavior with no force and no crash:
 
-1. the CLI flag `--enable-force-feedback` was actually passed to the
-   probe/bridge (the launcher does not pass it, and never does so
-   automatically);
+1. the `--enable-force-feedback` flag was actually passed (the launcher
+   never passes it on its own -- a normal double-click run is unaffected
+   regardless of profile content);
 2. the *resolved* profile has its own `forceFeedback.enabled: true` block
    with valid values. The shipped `logitech-g923-ps-pc-directinput.json`
    ships with `enabled: false` even though its numeric values are
@@ -113,8 +114,15 @@ force and no crash:
    [configs/default_profiles/README.md](../configs/default_profiles/README.md).
 
 If you passed the flag and still feel nothing, check the bridge's console
-output: it prints explicitly whether force feedback ended up ENABLED or
-fell back to input-only, and why.
+output (or `%LOCALAPPDATA%\RVWheel\logs\bridge.log` when started through
+the launcher): it prints explicitly whether force feedback ended up
+ENABLED or fell back to input-only, and why.
+
+If the launcher instead shows a message box saying a bridge is already
+running and refuses to continue, that is intentional (fail-closed): it
+will not silently reuse or kill a bridge that might be plain input-only
+when you explicitly asked for force feedback. Close the existing
+`rvwheel_device_probe.exe` process first, then try again.
 
 ### Force feedback stopped after unplugging/replugging the wheel
 

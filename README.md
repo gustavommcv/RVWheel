@@ -20,23 +20,27 @@ Working and validated:
 - guided calibration with continuous 60 Hz acquisition and stable-window sampling for unknown devices;
 - standalone `rvwheel_device_probe` for listing, monitoring, capturing, calibrating, and hosting the live bridge;
 - native `rvwheel_launcher` for one-click mod sync, bridge supervision, and Steam game startup;
-- 221 unit tests passing in Release at the latest local validation;
+- 231 unit tests passing in Release at the latest local validation;
 - Logitech G923 (`046D:C266`) detected on real hardware with 25 buttons, one POV, three pedal axes, steering, and reported FFB capability.
 - playable UE4SS integration validated with steering, throttle, brake, clutch,
   Logitech H-pattern gears 1–5, neutral, and reverse.
-- an opt-in force feedback path: `rvwheel_device_probe --bridge --enable-force-feedback`
-  runs the profile-configured centering spring through the real safety
-  controller, holding exclusive DirectInput access without disrupting the
-  bridge's normal input publishing. The underlying spring/safety-controller
-  mechanism was validated on a real G923 (weak spring, masterGain/
-  springStrength 0.2, slew rate 0.5/s) across multiple consecutive runs in
-  both foreground and background DirectInput cooperative levels, and the
+- an opt-in force feedback path, reachable from either
+  `rvwheel_device_probe --bridge --enable-force-feedback` or
+  `rvwheel_launcher --enable-force-feedback [--profiles-dir <path>]`: runs
+  the profile-configured centering spring through the real safety
+  controller, holding exclusive DirectInput access without disrupting
+  input publishing. Validated on a real G923 (weak spring, masterGain/
+  springStrength 0.2, slew rate 0.5/s): the underlying spring/safety-
+  controller mechanism across multiple standalone diagnostic runs, the
   bridge integration itself (readiness-gated activation, bounded
-  `--duration`, confirmed stop) has now passed one standalone physical run
-  end-to-end — see [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md). Off by
-  default, requires two independent explicit opt-ins (the CLI flag and the
-  profile's own `forceFeedback.enabled`), and does **not** yet react to
-  speed, terrain, or collisions — no vehicle telemetry feeds it.
+  `--duration`, confirmed stop) standalone end-to-end, and now, once, **the
+  full launcher path inside an actual game session** — steering, pedals,
+  clutch, and shifter kept working, the spring stayed stable, and
+  resistance returned to normal after closing the game — see
+  [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md). Off by default,
+  requires two independent explicit opt-ins (the flag and the profile's own
+  `forceFeedback.enabled`), and does **not** yet react to speed, terrain,
+  or collisions — no vehicle telemetry feeds it.
 
 Still required before this is a polished installable mod:
 
@@ -45,9 +49,9 @@ Still required before this is a polished installable mod:
 - package UE4SS and the launcher into a polished end-user installer;
 - validate multiplayer behavior;
 - wire vehicle telemetry from Lua into the force feedback engine so effects
-  can react to actual driving, not just a static centering spring; the
-  launcher does not enable force feedback automatically yet, and a wheel
-  reconnect currently requires restarting the bridge while
+  can react to actual driving, not just a static centering spring; a normal
+  double-click launcher run still never enables force feedback on its own,
+  and a wheel reconnect currently requires restarting the bridge while
   `--enable-force-feedback` is active.
 
 See [the G923 hardware baseline](docs/hardware/G923_DIRECTINPUT_CAPTURE.md) for measured behavior and unresolved findings.
@@ -153,6 +157,13 @@ bridge host, the UE4SS `RVWheel` mod, and the default device profiles. The launc
 It safely reuses a game or bridge that is already running. Bridge diagnostics are
 written to `%LOCALAPPDATA%\RVWheel\logs\bridge.log`. Launcher failures are shown in
 a Windows message box instead of silently failing.
+
+Passing `--enable-force-feedback` (optionally with `--profiles-dir <path>`)
+starts the bridge with the same opt-in force feedback path `rvwheel_device_probe`
+has — see [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md). Neither flag changes
+what a plain double-click does. If a bridge is already running when
+`--enable-force-feedback` is passed, the launcher does not reuse or kill it — it
+asks you to close the existing one first, since it might be plain input-only.
 
 ## Device probe
 

@@ -64,6 +64,39 @@ void AppendUnique(std::vector<std::filesystem::path>& paths, std::filesystem::pa
     return cursor < trimmed.size() && trimmed[cursor] == ':';
 }
 
+// Standard Windows command-line argument quoting -- the algorithm
+// CommandLineToArgvW (and the MSVC CRT's own argv splitter, which is what
+// the bridge's wmain(argc, argv) uses) expect on the way back in. A plain
+// path can legitimately contain spaces (quoting required), and a path
+// that happens to end in a bare backslash (e.g. a drive root "D:\") must
+// NOT have that backslash collapse into an escaped closing quote, hence
+// the backslash-run bookkeeping below rather than a naive wrap-in-quotes.
+[[nodiscard]] std::wstring QuoteCommandLineArgument(std::wstring_view value) {
+    if (!value.empty() && value.find_first_of(L" \t\n\v\"") == std::wstring_view::npos) {
+        return std::wstring(value);
+    }
+    std::wstring result(1, L'"');
+    std::size_t backslashes = 0;
+    for (const wchar_t ch : value) {
+        if (ch == L'\\') {
+            ++backslashes;
+            continue;
+        }
+        if (ch == L'"') {
+            result.append(backslashes * 2 + 1, L'\\');
+            backslashes = 0;
+            result.push_back(L'"');
+            continue;
+        }
+        result.append(backslashes, L'\\');
+        backslashes = 0;
+        result.push_back(ch);
+    }
+    result.append(backslashes * 2, L'\\');
+    result.push_back(L'"');
+    return result;
+}
+
 } // namespace
 
 std::vector<std::filesystem::path> ParseSteamLibraryRoots(std::wstring_view vdfText,
@@ -140,6 +173,50 @@ std::vector<std::filesystem::path> BridgeExecutableCandidates(const std::filesys
         launcherDirectory / kBridgeExecutableFileName,
         toolsBuildDirectory / L"device_probe" / configName / kBridgeExecutableFileName,
     };
+}
+
+LauncherCliParseResult ParseLauncherArgs(const std::vector<std::wstring>& args) {
+    LauncherCliParseResult result;
+    bool enableForceFeedback = false;
+    std::filesystem::path profilesDir;
+
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::wstring& arg = args[i];
+        if (arg == L"--enable-force-feedback") {
+            enableForceFeedback = true;
+        } else if (arg == L"--profiles-dir") {
+            if (i + 1 >= args.size()) {
+                result.errorMessage = L"--profiles-dir requer um caminho de diretório.";
+                return result;
+            }
+            profilesDir = std::filesystem::path(args[++i]);
+            if (profilesDir.empty()) {
+                result.errorMessage = L"--profiles-dir requer um caminho de diretório não vazio.";
+                return result;
+            }
+        } else {
+            result.errorMessage = L"Argumento não reconhecido: " + arg;
+            return result;
+        }
+    }
+
+    result.options.enableForceFeedback = enableForceFeedback;
+    result.options.profilesDir = std::move(profilesDir);
+    result.success = true;
+    return result;
+}
+
+std::wstring BuildBridgeCommandLine(const std::filesystem::path& bridgeExecutable, const LauncherOptions& options,
+                                     int rateHz, std::uint32_t parentProcessId) {
+    std::wstring commandLine = QuoteCommandLineArgument(bridgeExecutable.wstring()) + L" --bridge --rate " +
+                                std::to_wstring(rateHz) + L" --parent-pid " + std::to_wstring(parentProcessId);
+    if (options.enableForceFeedback) {
+        commandLine += L" --enable-force-feedback";
+    }
+    if (!options.profilesDir.empty()) {
+        commandLine += L" --profiles-dir " + QuoteCommandLineArgument(options.profilesDir.wstring());
+    }
+    return commandLine;
 }
 
 } // namespace rvwheel::tools::launcher

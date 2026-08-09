@@ -478,6 +478,78 @@ consecutive runs through the bridge specifically, reconnect behavior, a
 fault-recovery path in this integration, or anything inside the actual
 game/UE4SS mod.
 
+### First in-game physical test (launcher opt-in)
+
+All prior entries ran the standalone probe/bridge directly. This entry is
+the first test of force feedback delivered through the actual
+`rvwheel_launcher.exe` player path, after adding: `--enable-force-feedback`/
+`--profiles-dir <path>` launcher opt-ins (both off/absent by default --
+`rvwheel_launcher.exe` with no arguments is unchanged); pure, tested
+argument parsing and bridge-command-line construction
+(`ParseLauncherArgs`/`BuildBridgeCommandLine` in `LauncherCore.hpp/.cpp`);
+and a fail-closed check that refuses (rather than silently reusing or
+killing) an already-running bridge process when `--enable-force-feedback`
+is requested. Before this run: confirmed via `Get-Process` that no
+`rvwheel_device_probe.exe`, `rvwheel_launcher.exe`, or
+`Ride-Win64-Shipping.exe` was already running; Debug and Release both
+rebuilt clean, 231/231 tests passing in both (0 hardware/game access from
+the suite), `git diff --check` clean. A profile copy with the same
+`axes`/`readiness` as the real, calibrated user profile
+(`%LOCALAPPDATA%\RVWheel\profiles\logitech-g923-ps-pc-directinput.json`,
+read but never modified) plus the validated `forceFeedback` block was
+placed under an isolated `--profiles-dir`
+(`$env:TEMP\RVWheel-ffb-game-test\profiles`).
+
+**2026-08-09 — Launcher, in-game, weak spring (gain=0.2, slew=0.5/s):
+technical and physical pass.** Exact command:
+
+```powershell
+& ".\build\tools\launcher\Release\rvwheel_launcher.exe" `
+  --enable-force-feedback `
+  --profiles-dir "C:\Users\gugam\AppData\Local\Temp\RVWheel-ffb-game-test\profiles"
+```
+
+The launcher installed/updated the mod, started the bridge with the
+opt-in flags forwarded, and opened the game through Steam; the operator
+then drove normally. From `bridge.log`:
+`[dal-info] Initial Acquire() succeeded with EXCLUSIVE | BACKGROUND`,
+`Force feedback: armed (...)`, then the one-time waiting-for-readiness
+message, then -- after the operator moved and released the wheel in-game
+-- `Force feedback: device readiness reached; engine ENABLED.` and
+`GetForceFeedbackState` showing `ACTUATORSOFF|EMPTY|POWERON` ->
+`ACTUATORSON|POWERON`. No `Force feedback backend faulted` line at any
+point (one unrelated, non-FFB `failed to publish bridge frame` warning
+occurred and self-recovered, as designed). Closing the game ended the
+launcher's `WaitForSingleObject`, which ended the launcher process, which
+the bridge's `--parent-pid` supervision detected: `Stopping bridge
+(supervised parent process exited)...`, `Force feedback engine stop
+signal: yes`, `Final StopForceFeedback(): Ok`. Launcher exit code `0`;
+6577 bridge polls, 11 transient publish-frame failures (unrelated to
+force feedback). This is the first time the parent-exit stop path (as
+opposed to Ctrl+C or `--duration`) was exercised against real hardware.
+
+The operator (playing normally, hands on the wheel) reported: steering,
+throttle, brake, clutch, and the H-pattern shifter all worked correctly
+throughout; the wheel felt **lighter** during the session (the weak
+centering spring, consistent with prior standalone results); it **stayed
+stable, with no oscillation, vibration, or unexpected force**; and
+resistance **returned to normal** immediately after the game closed.
+
+**Conclusion for this specific test**: force feedback now works
+end-to-end through the actual player-facing launcher path, inside a real
+game session, without disrupting steering/pedal/clutch/shifter input,
+and stops safely and confirmedly when the game is closed normally. This
+is one run, one operator, one device, one play session, spring only
+(`damperStrength` still `0.0`, still unvalidated); it does **not**
+validate multiple consecutive in-game sessions, a mid-session
+disconnect/reconnect, a fault-recovery path while driving, or the
+launcher's fail-closed check against an actually-conflicting running
+bridge (that specific branch is unit-tested, not hardware-tested, since
+triggering it deliberately would mean starting a second, uncontrolled
+bridge instance). Vehicle telemetry (speed, terrain, collisions) is still
+entirely unimplemented; this remains a static centering spring
+regardless of what the vehicle is doing.
+
 ## Recording results
 
 For each step, record: date, exact command/config used, hardware

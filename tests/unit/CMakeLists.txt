@@ -67,7 +67,11 @@ if(TARGET rvwheel_device_probe_core)
 endif()
 
 if(TARGET rvwheel_launcher_core)
-    target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel_launcher_core)
+    # Shell32 is needed only by LauncherCoreTests.cpp, which round-trips
+    # BuildBridgeCommandLine's output through the real CommandLineToArgvW
+    # parser -- a pure string-parsing Win32 call, not hardware/device
+    # access -- instead of re-asserting a hand-rolled quoting algorithm.
+    target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel_launcher_core Shell32)
 endif()
 
 if(MSVC)

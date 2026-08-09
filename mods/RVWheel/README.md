@@ -41,6 +41,11 @@ This flow was derived from and should credit bitter's open-source
 [Gear Hotkeys](https://github.com/bitterbutt/RVThereYet-GearHotkeys) mod.
 
 Validated in a real single-player drive on 2026-08-08: steering, throttle,
-brake, clutch-gated gears 1–5, neutral, and reverse worked. Multiplayer,
-force feedback, packaging, and automatic host startup remain separate
-milestones.
+brake, clutch-gated gears 1–5, neutral, and reverse worked. An opt-in
+force feedback path (a validated weak centering spring; no vehicle
+telemetry yet) has since been physically validated in-game too, through
+both the standalone bridge and `rvwheel_launcher --enable-force-feedback`
+— see [docs/FORCE_FEEDBACK.md](../../docs/FORCE_FEEDBACK.md). The
+launcher already starts this host automatically as part of a normal run.
+Multiplayer validation and a polished end-user installer (beyond the
+existing CPack ZIP) remain separate milestones.

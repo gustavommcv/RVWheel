@@ -30,7 +30,8 @@
 | Telemetry-derived self-aligning torque | **Not implemented** — see [Limitations](#limitations) |
 | Simulation mode (`--ffb-simulate`) | Implemented, exercised against real hardware in read-only/simulated form |
 | Real force applied to a device | Weak spring/damper diagnostic (gain 0.2) now runs a full stable 5s window with a clean stop, confirmed across several runs in foreground-focused and background modes; no unsafe motion reported in any run |
-| `--bridge --enable-force-feedback` | Implemented: two independent gates (CLI flag + profile `forceFeedback.enabled`), readiness-gated `Enable()`, optional `--duration` bound, confirmed/observable `Stop()`, disables periodic re-enumeration while active. Physically validated once on a real G923 (weak spring, 5s bounded run, clean `engine ENABLED` after readiness and confirmed stop) -- see the "Bridge integration first physical test" entry in [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md). Manual in-game validation still pending -- see [Limitations](#limitations) |
+| `--bridge --enable-force-feedback` | Implemented: two independent gates (CLI flag + profile `forceFeedback.enabled`), readiness-gated `Enable()`, optional `--duration` bound, confirmed/observable `Stop()`, disables periodic re-enumeration while active. Physically validated standalone (weak spring, 5s bounded run) -- see the "Bridge integration first physical test" entry in [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md) |
+| `rvwheel_launcher --enable-force-feedback --profiles-dir <path>` | Implemented: both opt-in and off by default (a plain launcher invocation is unchanged), fail-closed if a bridge is already running, pure/tested argument parsing and command-line construction. Physically validated once **inside a real game session**: `engine ENABLED` reached, steering/pedals/clutch/shifter unaffected, spring stayed stable, resistance returned to normal after closing the game -- see the "First in-game physical test" entry in [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md) |
 
 ## Architecture
 
@@ -135,11 +136,13 @@ guarantee.
 `forceFeedback.enabled: true` is necessary but not sufficient: `--bridge`
 also requires the separate `--enable-force-feedback` runtime flag (off by
 default) before it ever calls `ForceFeedbackEngine::Enable()` — see
-[Bridge integration](#bridge-integration) below. The launcher does not pass
-this flag, so a normal player run of `rvwheel_launcher.exe` never enables
-force feedback regardless of profile content. `hasForceFeedback` being
-reported by a device is also only a capability, not proof every effect type
-actually works on that unit — see [Limitations](#limitations).
+[Bridge integration](#bridge-integration) below. A normal player run of
+`rvwheel_launcher.exe` (no arguments) never passes this flag, so it never
+enables force feedback regardless of profile content -- the launcher can
+forward it, but only when `--enable-force-feedback` is explicitly given.
+`hasForceFeedback` being reported by a device is also only a capability,
+not proof every effect type actually works on that unit — see
+[Limitations](#limitations).
 
 ## Bridge integration
 
@@ -285,7 +288,16 @@ rvwheel_device_probe.exe --ffb-simulate [--duration <s>] [--rate <hz>] [--profil
 rvwheel_device_probe.exe --ffb-hw-test-stop-only --ffb-cooperative-level foreground
 rvwheel_device_probe.exe --ffb-hw-test-stop-only --ffb-cooperative-level foreground-focused
 rvwheel_device_probe.exe --bridge --enable-force-feedback [--profile <id-or-path>] [--duration <s>]  # REAL force; see below.
+rvwheel_launcher.exe --enable-force-feedback [--profiles-dir <path>]  # REAL force, inside the actual game; see below.
 ```
+
+The launcher forwards `--enable-force-feedback` and `--profiles-dir`
+(when given) straight to the bridge it starts, plus its usual `--rate 60`
+and `--parent-pid`. Neither flag changes what a plain
+`rvwheel_launcher.exe` (no arguments) does. If a bridge is already
+running when `--enable-force-feedback` is passed, the launcher refuses to
+reuse or kill it -- it shows a message asking you to close the existing
+process first, since that bridge might be plain input-only.
 
 `--ffb-simulate` resolves the device's profile (or a conservative built-in
 demonstration config if the profile has no `forceFeedback` block), runs the
@@ -339,9 +351,11 @@ again, delete its `forceFeedback` block or set `enabled` back to `false`.
 - No Lua-side telemetry capture exists; `VehicleTelemetry` has no real
   producer. `BridgeForceFeedbackSession` always ticks the engine with an
   empty `VehicleTelemetry`.
-- The launcher does not pass `--enable-force-feedback`; a normal player run
-  never enables force feedback regardless of profile content. This is a
-  deliberate, not-yet-implemented next step, not an oversight.
+- A normal player run of `rvwheel_launcher.exe` (no arguments) never
+  enables force feedback regardless of profile content -- this stays true
+  even though the launcher can now forward `--enable-force-feedback`/
+  `--profiles-dir <path>` to the bridge when explicitly given both flags.
+  Nothing about the default double-click path changed.
 - Reconnecting the wheel while `--enable-force-feedback` is active requires
   restarting the bridge process in this first version -- periodic
   re-enumeration is disabled for the whole run once exclusive access is
@@ -363,11 +377,14 @@ again, delete its `forceFeedback` block or set `enabled` back to `false`.
   `enabled: true` -- see [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md).
 - Only DirectInput's condition/constant-force effect types are wired;
   periodic effects (sine, square, etc.) and envelopes are not implemented.
-- The game has not been opened with `--enable-force-feedback` active yet.
-  The bridge-level integration itself has now been physically validated
-  once, standalone (weak spring, 5s bounded run via `--duration`, clean
-  `engine ENABLED` after readiness, confirmed stop) -- see the "Bridge
-  integration first physical test" entry in
+- The game *has* now been opened with force feedback active, once, via
+  `rvwheel_launcher --enable-force-feedback --profiles-dir <path>` --
+  `engine ENABLED` was reached, steering/throttle/brake/clutch/shifter
+  all worked normally, the spring stayed stable with no oscillation, and
+  resistance returned to normal after closing the game -- see the "First
+  in-game physical test" entry in
   [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md). This
-  is one run outside the game; it does not validate the mod/UE4SS path,
-  multiple consecutive runs, or reconnect behavior.
+  is one run, one operator, one play session: it does not validate
+  multiple consecutive in-game sessions, a mid-session disconnect, or the
+  launcher's fail-closed check against an actually-conflicting bridge
+  (unit-tested, not hardware-tested).
