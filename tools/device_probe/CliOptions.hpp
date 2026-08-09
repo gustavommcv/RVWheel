@@ -17,6 +17,17 @@ enum class ProbeMode {
     Profiles,
     Calibrate,
     FfbSimulate,
+    FfbHardwareTestStopOnly,
+    FfbHardwareTestWeakEffect,
+};
+
+// Which single condition effect --ffb-hw-test-weak-effect exercises. Only
+// one at a time, on purpose: the gated hardware test procedure
+// (docs/FORCE_FEEDBACK_HARDWARE_TEST.md) isolates spring from damper so a
+// problem can be attributed to one specific effect type.
+enum class FfbTestEffect {
+    Spring,
+    Damper,
 };
 
 struct CliOptions {
@@ -47,6 +58,12 @@ struct CliOptions {
     // characters; DeviceProbeApp decides whether to treat it as a path or
     // a profileId.
     std::wstring profileSelector;
+
+    // --ffb-hw-test-weak-effect --effect <spring|damper>. Gain/strength/
+    // duration are deliberately NOT configurable from the command line for
+    // this mode -- see DeviceProbeApp::RunFfbHardwareTestWeakEffect -- so
+    // this field only ever selects which single effect type is exercised.
+    FfbTestEffect ffbTestEffect = FfbTestEffect::Spring;
 };
 
 struct CliParseResult {

@@ -62,6 +62,8 @@ std::string CliParser::UsageText() {
            "  rvwheel_device_probe --capture <path.jsonl> [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
            "  rvwheel_device_probe --bridge [--rate <hz>] [--profile <id-or-path>]\n"
            "  rvwheel_device_probe --ffb-simulate [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
+           "  rvwheel_device_probe --ffb-hw-test-stop-only\n"
+           "  rvwheel_device_probe --ffb-hw-test-weak-effect [--effect spring|damper]\n"
            "\n"
            "Options:\n"
            "  --duration <seconds>   How long --monitor/--capture/--ffb-simulate run. Range [1, 3600], default 30.\n"
@@ -74,6 +76,9 @@ std::string CliParser::UsageText() {
            "                         overrides load from) instead of %LOCALAPPDATA%\\RVWheel\\profiles. Valid with\n"
            "                         any mode.\n"
            "  --parent-pid <pid>     Optional launcher process to supervise. Only valid with --bridge.\n"
+           "  --effect spring|damper Which single condition effect --ffb-hw-test-weak-effect exercises.\n"
+           "                         Default spring. Gain/strength/duration are fixed, conservative constants\n"
+           "                         for this mode and are not configurable.\n"
            "\n"
            "Notes:\n"
            "  - Hardware is re-enumerated at most once every 5 seconds; not configurable here.\n"
@@ -81,14 +86,23 @@ std::string CliParser::UsageText() {
            "  - --ffb-simulate computes and prints force feedback commands using the resolved profile's\n"
            "    forceFeedback config, but ALWAYS routes them to an in-process recording sink -- it never calls\n"
            "    ApplyForceFeedback/StopForceFeedback on the real device, so no actuator is ever driven by it.\n"
+           "  - --ffb-hw-test-stop-only is a REAL hardware test: it requests exclusive force-feedback access on\n"
+           "    the first FFB-capable device and calls the real StopForceFeedback() exactly once. It never\n"
+           "    creates or starts an effect. Only run this as part of the gated procedure in\n"
+           "    docs/FORCE_FEEDBACK_HARDWARE_TEST.md, with the wheel secured and someone watching.\n"
+           "  - --ffb-hw-test-weak-effect is a REAL hardware test: it applies ONE real, weak (gain 0.1) effect\n"
+           "    for a fixed 5 seconds via the real ForceFeedbackSafetyController, then stops. Only run this\n"
+           "    after --ffb-hw-test-stop-only has passed, per docs/FORCE_FEEDBACK_HARDWARE_TEST.md.\n"
            "  - --bridge runs until Ctrl+C and publishes the latest safe input snapshot under LOCALAPPDATA.\n"
-           "  - Exactly one of --help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate must be given.\n";
+           "  - Exactly one of --help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/\n"
+           "    --ffb-hw-test-stop-only/--ffb-hw-test-weak-effect must be given.\n";
 }
 
 CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     constexpr const char* kConflictingModeMessage =
         "Conflicting mode flags: only one of "
-        "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate may be given.";
+        "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/--ffb-hw-test-stop-only/"
+        "--ffb-hw-test-weak-effect may be given.";
 
     CliParseResult result;
     bool modeSet = false;
@@ -97,9 +111,11 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     bool outputSet = false;
     bool profileSet = false;
     bool parentPidSet = false;
+    bool effectSet = false;
     long long durationSeconds = kDefaultDurationSeconds;
     long long rateHz = kDefaultRateHz;
     long long parentProcessId = 0;
+    FfbTestEffect effect = FfbTestEffect::Spring;
     std::filesystem::path capturePath;
     std::filesystem::path calibrateOutputPath;
     std::filesystem::path profilesDirOverride;
@@ -150,6 +166,32 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
             }
             result.options.mode = ProbeMode::FfbSimulate;
             modeSet = true;
+        } else if (arg == L"--ffb-hw-test-stop-only") {
+            if (modeSet) {
+                return Fail(kConflictingModeMessage);
+            }
+            result.options.mode = ProbeMode::FfbHardwareTestStopOnly;
+            modeSet = true;
+        } else if (arg == L"--ffb-hw-test-weak-effect") {
+            if (modeSet) {
+                return Fail(kConflictingModeMessage);
+            }
+            result.options.mode = ProbeMode::FfbHardwareTestWeakEffect;
+            modeSet = true;
+        } else if (arg == L"--effect") {
+            if (i + 1 >= args.size()) {
+                return Fail("--effect requires \"spring\" or \"damper\".");
+            }
+            const std::wstring& value = args[++i];
+            if (value == L"spring") {
+                effectSet = true;
+                effect = FfbTestEffect::Spring;
+            } else if (value == L"damper") {
+                effectSet = true;
+                effect = FfbTestEffect::Damper;
+            } else {
+                return Fail("--effect must be \"spring\" or \"damper\".");
+            }
         } else if (arg == L"--capture") {
             if (modeSet) {
                 return Fail(kConflictingModeMessage);
@@ -234,7 +276,8 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
 
     if (!modeSet) {
         return Fail("No mode given. Specify exactly one of "
-                     "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate.");
+                     "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/"
+                     "--ffb-hw-test-stop-only/--ffb-hw-test-weak-effect.");
     }
 
     if (durationSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture &&
@@ -255,6 +298,9 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     if (parentPidSet && result.options.mode != ProbeMode::Bridge) {
         return Fail("--parent-pid only applies to --bridge.");
     }
+    if (effectSet && result.options.mode != ProbeMode::FfbHardwareTestWeakEffect) {
+        return Fail("--effect only applies to --ffb-hw-test-weak-effect.");
+    }
 
     result.options.duration = std::chrono::seconds{durationSeconds};
     result.options.rateHz = static_cast<int>(rateHz);
@@ -263,6 +309,7 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     result.options.calibrateOutputPath = std::move(calibrateOutputPath);
     result.options.profilesDirOverride = std::move(profilesDirOverride);
     result.options.profileSelector = std::move(profileSelector);
+    result.options.ffbTestEffect = effect;
     result.success = true;
     return result;
 }

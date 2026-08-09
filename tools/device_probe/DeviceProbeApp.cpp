@@ -99,13 +99,18 @@ void PrintDiagnostic(LogLevel level, std::string_view message) {
     std::cerr << "[dal-" << label << "] " << message << "\n";
 }
 
-[[nodiscard]] std::unique_ptr<DeviceManager> CreateManager(const HiddenWindow& window) {
+[[nodiscard]] std::unique_ptr<DeviceManager> CreateManager(const HiddenWindow& window,
+                                                            bool requestExclusiveForceFeedbackAccess = false) {
     DeviceManagerInitParams params{};
     params.instance = window.Instance();
     params.window = window.Handle();
     params.refreshInterval = std::chrono::seconds{5};
     params.diagnostics = &PrintDiagnostic;
-    params.requestExclusiveForceFeedbackAccess = false;
+    // Every mode except the explicit real-hardware FFB test keeps this
+    // false, matching the input-preserving default this project has always
+    // shipped: reading the wheel must not block G HUB or the game from
+    // reading it too. See DirectInputDeviceEnumerator.cpp.
+    params.requestExclusiveForceFeedbackAccess = requestExclusiveForceFeedbackAccess;
     return CreateDefaultDeviceManager(params);
 }
 
@@ -376,6 +381,10 @@ int DeviceProbeApp::Run() {
             return RunBridge();
         case ProbeMode::FfbSimulate:
             return RunFfbSimulate();
+        case ProbeMode::FfbHardwareTestStopOnly:
+            return RunFfbHardwareTestStopOnly();
+        case ProbeMode::FfbHardwareTestWeakEffect:
+            return RunFfbHardwareTestWeakEffect();
     }
     return 1;
 }
@@ -1334,6 +1343,171 @@ int DeviceProbeApp::RunFfbSimulate() {
     std::cout << "\nSimulation finished: " << tickCount << " ticks. sink.applyCount=" << sink.applyCount
               << ", sink.stopCount=" << sink.stopCount
               << ". No ApplyForceFeedback/StopForceFeedback call ever reached the real device.\n";
+    return 0;
+}
+
+int DeviceProbeApp::RunFfbHardwareTestStopOnly() {
+    std::cout << "=== RVWheel Force Feedback REAL HARDWARE TEST -- Step 4: Stop only ===\n"
+                 "This requests EXCLUSIVE force-feedback access on the first FFB-capable device and calls\n"
+                 "the real StopForceFeedback() exactly once. No effect is ever created or started here.\n"
+                 "If you feel ANY motion, resistance, or vibration at any point, disconnect the wheel now.\n\n";
+
+    HiddenWindow window;
+    if (!window.IsValid()) {
+        std::cerr << "Failed to create the hidden Win32 window required for DirectInput.\n";
+        return 1;
+    }
+
+    auto manager = CreateManager(window, /*requestExclusiveForceFeedbackAccess=*/true);
+    manager->RefreshIfDue();
+    window.PumpMessages();
+
+    IWheelDevice* device = nullptr;
+    for (IWheelDevice* candidate : manager->Devices()) {
+        if (candidate->Info().capabilities.hasForceFeedback) {
+            device = candidate;
+            break;
+        }
+    }
+    if (device == nullptr) {
+        std::cerr << "No force-feedback-capable device was found. Nothing to test; exiting safely.\n";
+        return 1;
+    }
+
+    std::cout << "Target device: " << device->Info().name << " ("
+              << FormatVendorProductId(device->Info().vendorId, device->Info().productId) << ")\n";
+    std::cout << "Attempting exclusive acquisition (first-ever real attempt in this project -- see "
+                 "docs/research/FORCE_FEEDBACK_FEASIBILITY.md, open question 2)...\n";
+
+    // No FFB call yet: just confirm input polling still works under
+    // exclusive acquisition, which is itself an open question this
+    // resolves either way.
+    bool anyPollOk = false;
+    for (int i = 0; i < 10; ++i) {
+        window.PumpMessages();
+        if (device->Poll().IsOk()) {
+            anyPollOk = true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    std::cout << "Input still readable under exclusive acquisition: " << (anyPollOk ? "yes" : "no") << "\n";
+    std::cout << "  steering=" << device->State().steering << " throttle=" << device->State().throttle
+              << " connected=" << (device->IsConnected() ? "true" : "false") << "\n\n";
+
+    std::cout << "Calling the REAL StopForceFeedback() once now. No effect has ever been created on this "
+                 "device by this process; expect ZERO motion.\n";
+    const Status stopStatus = device->StopForceFeedback();
+    std::cout << "StopForceFeedback() returned: " << FormatStatusCode(stopStatus.Code());
+    if (!stopStatus.Message().empty()) {
+        std::cout << " (" << stopStatus.Message() << ")";
+    }
+    std::cout << "\n\n";
+
+    std::cout << "Test finished. Before doing anything else with force feedback, confirm with whoever was "
+                 "physically observing the wheel that NO motion, resistance, or vibration occurred at any "
+                 "point above.\n";
+    return stopStatus.IsOk() ? 0 : 1;
+}
+
+int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
+    // Fixed, deliberately conservative constants for this one gated test --
+    // not CLI-configurable on purpose, so this mode can never be pointed at
+    // a stronger effect than the hardware test procedure's step 6/7 call for.
+    constexpr float kTestGain = 0.1f;
+    constexpr float kTestStrength = 0.1f;
+    constexpr auto kTestDuration = std::chrono::seconds{5};
+    constexpr auto kTickInterval = std::chrono::milliseconds{16};
+
+    const bool isSpring = (options_.ffbTestEffect == FfbTestEffect::Spring);
+    std::cout << "=== RVWheel Force Feedback REAL HARDWARE TEST -- weak " << (isSpring ? "spring" : "damper")
+              << " ===\n"
+              << "This applies ONE real, weak effect (gain=" << kTestGain << ", strength=" << kTestStrength
+              << ") for " << kTestDuration.count() << " seconds through the real safety controller, then stops.\n"
+              << "If the force feels stronger than expected, oscillates, or anything else feels wrong, press "
+                 "Ctrl+C now -- the wheel will stop.\n\n";
+
+    HiddenWindow window;
+    if (!window.IsValid()) {
+        std::cerr << "Failed to create the hidden Win32 window required for DirectInput.\n";
+        return 1;
+    }
+
+    auto manager = CreateManager(window, /*requestExclusiveForceFeedbackAccess=*/true);
+    manager->RefreshIfDue();
+    window.PumpMessages();
+
+    IWheelDevice* device = nullptr;
+    for (IWheelDevice* candidate : manager->Devices()) {
+        if (candidate->Info().capabilities.hasForceFeedback) {
+            device = candidate;
+            break;
+        }
+    }
+    if (device == nullptr) {
+        std::cerr << "No force-feedback-capable device was found. Nothing to test; exiting safely.\n";
+        return 1;
+    }
+    std::cout << "Target device: " << device->Info().name << "\n\n";
+
+    rvwheel::ffb::ForceFeedbackConfig config;
+    config.enabled = true;
+    config.masterGain = kTestGain;
+    config.springStrength = isSpring ? kTestStrength : 0.0f;
+    config.damperStrength = isSpring ? 0.0f : kTestStrength;
+    config.maxTorqueNormalized = kTestStrength;
+    config.slewRatePerSecond = 0.5f; // Slow, deliberate ramp for the first-ever real activation.
+    config.watchdogTimeout = std::chrono::milliseconds{200};
+
+    std::vector<std::unique_ptr<rvwheel::ffb::IForceFeedbackSource>> sources;
+    sources.push_back(std::make_unique<rvwheel::ffb::SpringDamperSource>(config));
+    rvwheel::ffb::ForceFeedbackEngine engine(rvwheel::ffb::ForceFeedbackSafetyController(config),
+                                              rvwheel::ffb::ForceFeedbackMixer{}, std::move(sources));
+
+    std::cout << "Arming in 3 seconds -- keep hands clear of the wheel until the effect feels correct.\n";
+    for (int s = 3; s > 0 && !stopRequested_.load(); --s) {
+        std::cout << s << "...\n";
+        std::this_thread::sleep_for(std::chrono::seconds{1});
+    }
+
+    if (!stopRequested_.load()) {
+        engine.Enable();
+
+        const auto start = std::chrono::steady_clock::now();
+        while (!stopRequested_.load()) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed = now - start;
+            if (elapsed >= kTestDuration) {
+                break;
+            }
+
+            window.PumpMessages();
+            manager->RefreshIfDue();
+            device->Poll();
+
+            const rvwheel::ffb::VehicleTelemetry telemetry{};
+            const auto decision = engine.Tick(*device, telemetry, device->State().steering, now, now);
+
+            std::cout << "[t=" << std::fixed << std::setprecision(1) << std::chrono::duration<double>(elapsed).count()
+                      << "s] state=" << rvwheel::ffb::ToString(engine.State()) << " spring=" << decision.command.spring
+                      << " damper=" << decision.command.damper << " gain=" << decision.command.gain << "\n";
+
+            std::this_thread::sleep_for(kTickInterval);
+        }
+    }
+
+    std::cout << "\nStopping...\n";
+    engine.Disable();
+    for (int i = 0; i < 200 && engine.State() != rvwheel::ffb::ForceFeedbackState::Disabled; ++i) {
+        engine.TickWithoutTelemetry(*device, std::chrono::steady_clock::now());
+        std::this_thread::sleep_for(kTickInterval);
+    }
+    // Belt-and-suspenders explicit stop, regardless of the engine's final state.
+    const Status finalStop = device->StopForceFeedback();
+    std::cout << "Final StopForceFeedback(): " << FormatStatusCode(finalStop.Code()) << "\n";
+
+    std::cout << "\nTest finished. Confirm the effect felt correct and stopped completely -- and that the wheel "
+                 "is not still resisting or centering -- before increasing gain or trying the other effect, per "
+                 "docs/FORCE_FEEDBACK_HARDWARE_TEST.md.\n";
     return 0;
 }
 

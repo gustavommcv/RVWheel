@@ -5,6 +5,7 @@
 
 using rvwheel::tools::probe::CliParser;
 using rvwheel::tools::probe::DeviceSelectionOutcome;
+using rvwheel::tools::probe::FfbTestEffect;
 using rvwheel::tools::probe::ProbeMode;
 using rvwheel::tools::probe::SelectDeviceForMonitoring;
 
@@ -72,6 +73,48 @@ TEST_CASE("CliParser: --ffb-simulate conflicts with other modes", "[DeviceProbe]
 
 TEST_CASE("CliParser: --parent-pid does not apply to --ffb-simulate", "[DeviceProbe][CliParser][FfbSimulate][Invalid]") {
     REQUIRE_FALSE(CliParser::Parse({L"--ffb-simulate", L"--parent-pid", L"123"}).success);
+}
+
+TEST_CASE("CliParser: --ffb-hw-test-stop-only parses alone with no extra options", "[DeviceProbe][CliParser][FfbHardwareTest]") {
+    const auto result = CliParser::Parse({L"--ffb-hw-test-stop-only"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::FfbHardwareTestStopOnly);
+}
+
+TEST_CASE("CliParser: --ffb-hw-test-stop-only rejects duration/rate/profile/parent-pid",
+          "[DeviceProbe][CliParser][FfbHardwareTest][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-stop-only", L"--duration", L"5"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-stop-only", L"--rate", L"60"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-stop-only", L"--profile", L"x"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-stop-only", L"--parent-pid", L"123"}).success);
+}
+
+TEST_CASE("CliParser: --ffb-hw-test-stop-only conflicts with other modes", "[DeviceProbe][CliParser][FfbHardwareTest][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-stop-only", L"--ffb-simulate"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--list", L"--ffb-hw-test-stop-only"}).success);
+}
+
+TEST_CASE("CliParser: --ffb-hw-test-weak-effect defaults to spring", "[DeviceProbe][CliParser][FfbHardwareTest]") {
+    const auto result = CliParser::Parse({L"--ffb-hw-test-weak-effect"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::FfbHardwareTestWeakEffect);
+    REQUIRE(result.options.ffbTestEffect == FfbTestEffect::Spring);
+}
+
+TEST_CASE("CliParser: --ffb-hw-test-weak-effect accepts --effect spring/damper", "[DeviceProbe][CliParser][FfbHardwareTest]") {
+    const auto spring = CliParser::Parse({L"--ffb-hw-test-weak-effect", L"--effect", L"spring"});
+    REQUIRE(spring.success);
+    REQUIRE(spring.options.ffbTestEffect == FfbTestEffect::Spring);
+
+    const auto damper = CliParser::Parse({L"--ffb-hw-test-weak-effect", L"--effect", L"damper"});
+    REQUIRE(damper.success);
+    REQUIRE(damper.options.ffbTestEffect == FfbTestEffect::Damper);
+}
+
+TEST_CASE("CliParser: --effect rejects an unknown value and only applies to --ffb-hw-test-weak-effect",
+          "[DeviceProbe][CliParser][FfbHardwareTest][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-weak-effect", L"--effect", L"nonsense"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--list", L"--effect", L"spring"}).success);
 }
 
 TEST_CASE("CliParser: --bridge accepts a launcher parent process", "[DeviceProbe][CliParser][Bridge]") {

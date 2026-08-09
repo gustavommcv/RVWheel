@@ -27,6 +27,8 @@ private:
     [[nodiscard]] int RunCapture();
     [[nodiscard]] int RunBridge();
     [[nodiscard]] int RunFfbSimulate();
+    [[nodiscard]] int RunFfbHardwareTestStopOnly();
+    [[nodiscard]] int RunFfbHardwareTestWeakEffect();
 
     CliOptions options_;
     std::atomic<bool>& stopRequested_;
