@@ -366,6 +366,59 @@ G923 firmware behavior at this level) and would require USB/HID-level
 tracing to verify. Diagnosing further is not currently planned; see the
 main text above for what would be needed.
 
+### Background-mode confirmation (continuation session)
+
+The ownership-lifecycle fix (no `RefreshIfDue()` while an exclusive effect
+is active) was validated above only under
+`DISCL_EXCLUSIVE | DISCL_FOREGROUND`. The practical goal is
+`DISCL_EXCLUSIVE | DISCL_BACKGROUND` — the mode that lets an external
+bridge hold FFB while the actual game window has focus — which had never
+been retested after the fix. Before touching hardware, a fresh session
+independently re-verified the current repository state (`git log`,
+`git status`) rather than trusting this document's own claims, then
+rebuilt and re-ran the full suite: **Release 200/200, Debug 200/200, both
+with zero new warnings.** `--list` reconfirmed the G923 with
+`forceFeedback=1`. Then, inspected the actual `RunFfbHardwareTestWeakEffect`
+loop in `DeviceProbeApp.cpp` and confirmed directly in code (not just from
+this document) that `manager->RefreshIfDue()` is called exactly once,
+before the loop, never inside it while the exclusive effect is active.
+
+**2026-08-09 — Background validation run #1 (weak spring, gain=0.2,
+`--ffb-cooperative-level background`): technical and physical pass.**
+Exact command:
+
+```powershell
+.\build\tools\device_probe\Release\rvwheel_device_probe.exe --ffb-hw-test-weak-effect --effect spring --ffb-cooperative-level background
+```
+
+`[dal-info] Initial Acquire() succeeded with EXCLUSIVE | BACKGROUND` printed
+exactly once. `state=Active` held continuously from t=0.2s through t=4.9s
+with no `Faulted`, no `DIERR_NOTEXCLUSIVEACQUIRED`. `Input polls remained
+readable: yes`. `Final StopForceFeedback(): Ok`. Exit code `0`. The operator
+was not watching the console (both hands on the wheel) and reported: wheel
+resistance was noticeably *lower* than the G923's own baseline for the
+duration of the effect (consistent with the already-documented device-wide
+`DIPROP_FFGAIN` interaction), returned to normal after the test ended, and
+**no abnormal vibration, resistance, or behavior remained**.
+
+**2026-08-09 — Background validation run #2 (same command, new explicit
+authorization): technical and physical pass.** Identical outcome: single
+`Initial Acquire() succeeded with EXCLUSIVE | BACKGROUND`, `Active` for the
+full 5.0s window, no fault, no `DIERR_NOTEXCLUSIVEACQUIRED`, input readable
+throughout, `Final StopForceFeedback(): Ok`, exit code `0`. Operator again
+reported lower-than-baseline resistance during the run only, with nothing
+abnormal afterward.
+
+**Conclusion for this specific diagnostic**: the exclusive-access loss that
+made `DISCL_EXCLUSIVE | DISCL_BACKGROUND` fail after ~2 seconds is fixed by
+the same ownership-lifecycle correction that fixed foreground mode — it was
+never a foreground/background distinction, only the periodic re-enumeration
+bug. Background mode is now confirmed stable for a 5-second weak spring
+effect across two consecutive authorized runs, on top of the prior
+foreground-focused pass. This is still only the weak-spring/damper
+diagnostic; it does **not** validate vehicle telemetry, gameplay
+integration, or any gain/effect beyond what was actually tested here.
+
 ## Recording results
 
 For each step, record: date, exact command/config used, hardware

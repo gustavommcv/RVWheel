@@ -1,19 +1,23 @@
 # Force Feedback
 
 > [!IMPORTANT]
-> Force feedback is **not validated on real hardware**. Five gated tests
-> against a real G923 (2026-08-09) passed Step 4 (stop-only) cleanly. Every
-> weak spring/damper attempt (Steps 6/7) reproduced the same
-> `DIERR_NOTEXCLUSIVEACQUIRED` failure after ~2 seconds, with G HUB and this
-> project's own input-reacquire logic both ruled out as the cause. A weak
-> damper run additionally showed the wheel's own *pre-existing* ambient
-> force feedback behavior (independent of any PC software) temporarily
-> weaken while this project held exclusive access, then return once the
-> failure hit -- current working hypothesis is a firmware/driver-level
-> watchdog on the wheel itself, unconfirmed but reassuring if true (a
-> hardware safety net on top of this project's software one). **No unsafe
-> motion was reported in any of the five runs.** See the **Incident log** in
-> [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md) and
+> Force feedback is **still not a finished feature**, but the
+> `DIERR_NOTEXCLUSIVEACQUIRED` failure that made every early real-hardware
+> run of the weak spring/damper diagnostic fail after ~2 seconds is now
+> **root-caused and fixed**: `DeviceManager`'s periodic 5-second refresh was
+> re-enumerating and exclusively re-acquiring a duplicate of the same
+> physical device while the diagnostic's own instance still held the
+> effect, revoking its exclusivity. It was never about G HUB, a firmware
+> watchdog, or foreground vs background. With re-enumeration disabled while
+> an exclusive effect is active, the weak-spring diagnostic has now passed
+> technically and physically in **`DISCL_EXCLUSIVE | DISCL_FOREGROUND`
+> (focused) and, across two consecutive authorized runs,
+> `DISCL_EXCLUSIVE | DISCL_BACKGROUND`** — the mode a production bridge
+> would actually use while the game stays in the foreground. **No unsafe
+> motion was reported in any run across either session.** This still only
+> validates the isolated diagnostic, not vehicle telemetry, gameplay
+> integration, or the production `--bridge` loop. See the **Incident log**
+> in [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md) and
 > [docs/research/FORCE_FEEDBACK_FEASIBILITY.md](research/FORCE_FEEDBACK_FEASIBILITY.md)
 > before doing anything else with real hardware. Do not enable
 > `forceFeedback.enabled` in a profile expecting a finished feature.
@@ -22,15 +26,15 @@
 
 | Piece | Status |
 |---|---|
-| DirectInput effect creation/update/stop (`CreateEffect`, `SetParameters`, `Stop`, `SendForceFeedbackCommand`) | Implemented; a real spring effect ran correctly for ~2s, then `SetParameters`/`Stop` reproducibly fail with `DIERR_NOTEXCLUSIVEACQUIRED` in all 3 runs, G HUB ruled out as the cause (see Incident log) |
+| DirectInput effect creation/update/stop (`CreateEffect`, `SetParameters`, `Stop`, `SendForceFeedbackCommand`) | Implemented; root cause of the ~2s `DIERR_NOTEXCLUSIVEACQUIRED` failure found and fixed (see Incident log) -- confirmed stable for a full 5s weak effect in both foreground-focused and background cooperative levels |
 | Capability detection (`DIDC_FORCEFEEDBACK`) | Implemented and confirmed working against a real G923 (read-only) |
-| Exclusive FFB acquisition | Confirmed working on a real G923 without breaking input polling (hardware test Step 4) |
-| `DISCL_EXCLUSIVE | DISCL_FOREGROUND` investigation | Unfocused test confirmed `DIERR_OTHERAPPHASPRIO`; focused no-effect retention passed for 5.01s/245 polls with successful state reads and STOPALL; real-effect confirmation remains pending |
+| Exclusive FFB acquisition | Confirmed working on a real G923 without breaking input polling, in both `DISCL_FOREGROUND` and `DISCL_BACKGROUND` |
+| Cooperative-level hypothesis (`DISCL_FOREGROUND` vs `DISCL_BACKGROUND`) | **Resolved as a red herring**: the ~2s failure was a `DeviceManager` re-enumeration bug, not a foreground/background distinction. Fixed once, confirmed stable in both modes |
 | Safety controller (clamps, watchdog, slew rate, fault handling) | Implemented, unit-tested (37+ tests); a real gain-ramp overshoot bug was found and fixed after the first real activation |
-| Profile-configured spring/damper source | Implemented, unit-tested; ran briefly on real hardware, see Incident log |
+| Profile-configured spring/damper source | Implemented, unit-tested; ran a full stable 5s window on real hardware across multiple runs, see Incident log |
 | Telemetry-derived self-aligning torque | **Not implemented** — see [Limitations](#limitations) |
 | Simulation mode (`--ffb-simulate`) | Implemented, exercised against real hardware in read-only/simulated form |
-| Real force applied to a device | **Attempted once (weak spring, gain 0.1), no unsafe motion reported, but not yet declared safe/working** — see Incident log |
+| Real force applied to a device | Weak spring/damper diagnostic (gain 0.2) now runs a full stable 5s window with a clean stop, confirmed across several runs in foreground-focused and background modes; no unsafe motion reported in any run. **Still not the same as validating production/gameplay FFB** — see Limitations |
 
 ## Architecture
 
@@ -254,9 +258,11 @@ regardless of profile content.
 - Nothing in the launcher or bridge calls `ForceFeedbackEngine::Enable()`;
   the engine is currently only reachable via `--ffb-simulate`.
 - Real weak spring/damper diagnostics have been applied to one G923 under
-  explicit per-run authorization. They reproducibly lose exclusive DirectInput
-  FFB access at approximately two seconds and therefore have **not passed
-  validation**; see the hardware test incident log. No production/gameplay FFB
-  path is enabled.
+  explicit per-run authorization and now run a full stable 5-second window
+  with a clean stop, in both foreground-focused and background cooperative
+  levels (see the hardware test incident log). This validates the isolated
+  diagnostic only -- no production/gameplay FFB path is enabled, nothing in
+  the launcher or bridge calls `ForceFeedbackEngine::Enable()`, and no other
+  wheel model or gain level has been tried.
 - Only DirectInput's condition/constant-force effect types are wired;
   periodic effects (sine, square, etc.) and envelopes are not implemented.

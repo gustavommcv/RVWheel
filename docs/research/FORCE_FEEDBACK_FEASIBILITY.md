@@ -411,3 +411,41 @@ new open question:
   unverified properties. Until open question 1 is resolved, RVWheel's SAT
   source must either be absent or explicitly report
   `InsufficientTelemetry` rather than guess.
+
+## Update — background-mode confirmation (continuation session, 2026-08-09)
+
+The prior session validated the ownership-lifecycle fix (no
+`RefreshIfDue()` while an exclusive effect is active) only under
+`DISCL_EXCLUSIVE | DISCL_FOREGROUND`. Since the practical goal for a
+production bridge is running behind an in-foreground game window, the
+open question was whether the *same* fix also holds under
+`DISCL_EXCLUSIVE | DISCL_BACKGROUND` — the mode that had originally
+exhibited the ~2-second failure before the root cause was known.
+
+Two consecutive, separately authorized runs of the weak-spring diagnostic
+with `--ffb-cooperative-level background` both passed every technical
+criterion (single exclusive `Acquire()`, full 5-second `Active` window, no
+`DIERR_NOTEXCLUSIVEACQUIRED`, no fault, readable input throughout,
+successful final `StopForceFeedback()`, exit code `0`) and both were
+confirmed physically safe by the operator (lower-than-baseline resistance
+during the effect only, normal baseline restored after, nothing abnormal).
+Full detail in
+[FORCE_FEEDBACK_HARDWARE_TEST.md](../FORCE_FEEDBACK_HARDWARE_TEST.md)'s
+"Background-mode confirmation" entries.
+
+**This confirms the ~2-second exclusive-access loss was never a
+foreground/background distinction — it was purely the periodic
+re-enumeration bug, and fixing that bug resolves the weak-spring/damper
+diagnostic in both cooperative-level modes.** Open questions 4/5 above,
+which speculated about a foreground requirement or a firmware/driver
+watchdog, are superseded by this simpler, fully-explained, code-level
+cause. The architectural implication: an external bridge process holding
+`DISCL_EXCLUSIVE | DISCL_BACKGROUND` while the actual game window stays in
+the foreground is the recommended direction, *provided* the same
+no-rediscovery-during-an-active-effect invariant is carried into that
+bridge's production design — not a game-side or in-process FFB
+implementation.
+
+This still validates only the isolated weak-spring/damper diagnostic, not
+vehicle telemetry, gameplay integration, or the production `--bridge` loop
+actually calling `ForceFeedbackEngine::Enable()`.
