@@ -33,6 +33,7 @@ add_executable(rvwheel_dal_tests
     AxisSourceTests.cpp
     DeviceManagerTests.cpp
     DeviceReadinessTests.cpp
+    DirectInputCooperativeLevelTests.cpp
     ForceFeedbackEngineTests.cpp
     ForceFeedbackMixerTests.cpp
     ForceFeedbackProfileTests.cpp

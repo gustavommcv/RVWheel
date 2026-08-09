@@ -70,6 +70,14 @@ void ForceFeedbackSafetyController::EmergencyStop() noexcept {
 }
 
 void ForceFeedbackSafetyController::ReportBackendFailure(std::string reason) noexcept {
+    // A stop attempt made while handling the original backend failure can
+    // itself fail (for example after DirectInput has already revoked
+    // exclusive access). Do not turn that secondary failure into a new
+    // stop edge on every subsequent tick: Faulted is latched and its stop
+    // request is deliberately edge-triggered.
+    if (state_ == ForceFeedbackState::Faulted) {
+        return;
+    }
     lastFaultReason_ = std::move(reason);
     appliedCommand_ = ZeroCommand();
     lastAppliedAt_.reset();

@@ -58,6 +58,25 @@ struct DiscoveredAxis {
     LONG rawMax = 0;
 };
 
+// DirectInput does not copy the buffers referenced by DIEFFECT. These
+// structures therefore live beside their corresponding COM effect for its
+// entire lifetime; using function-local DICONDITION/DICONSTANTFORCE values
+// here would leave the driver holding dangling pointers after CreateEffect
+// or SetParameters returns.
+struct ConstantForceEffectStorage {
+    DICONSTANTFORCE parameters{};
+    DWORD axis[1]{};
+    LONG direction[1]{};
+    std::optional<float> lastAppliedNormalized;
+};
+
+struct ConditionEffectStorage {
+    DICONDITION parameters{};
+    DWORD axis[1]{};
+    LONG direction[1]{};
+    std::optional<float> lastAppliedNormalized;
+};
+
 // Owns a single acquired IDirectInputDevice8A, the (lazily created)
 // force-feedback effects derived from it, and the readiness state machine
 // for whatever WheelInputLayout is currently applied. See
@@ -73,7 +92,8 @@ public:
     DirectInputDevice(Microsoft::WRL::ComPtr<IDirectInputDevice8A> device,
                        rvwheel::dal::DeviceInfo info,
                        std::vector<DiscoveredAxis> discoveredAxes,
-                       rvwheel::dal::DiagnosticSink diagnostics);
+                       rvwheel::dal::DiagnosticSink diagnostics,
+                       bool exclusiveForceFeedbackAccessRequested = false);
 
     ~DirectInputDevice() override;
 
@@ -132,12 +152,29 @@ private:
     rvwheel::dal::WheelState state_{};
     std::uint64_t sampleCounter_ = 0;
 
+    // Diagnostic-only knowledge of how this DirectInput instance was
+    // acquired. Ordinary shared-input devices leave this false and retain
+    // exactly their prior behavior. Exclusive FFB diagnostics use it to
+    // query actuator state and to treat a failed device-wide STOPALL as a
+    // real loss of exclusivity instead of an expected nonexclusive result.
+    bool exclusiveForceFeedbackAccessRequested_ = false;
+    std::optional<HRESULT> lastForceFeedbackStateQueryResult_;
+    std::optional<DWORD> lastForceFeedbackStateFlags_;
+    std::optional<HRESULT> exclusiveForceFeedbackAccessFailure_;
+
     // Created lazily on first successful ApplyForceFeedback call for each
     // effect type and then updated in place (SetParameters) rather than
     // recreated, per device capability. Null when unsupported or unused.
+    // Declared before the COM effects so C++ destroys the effects first
+    // (member destruction is reverse declaration order), while every
+    // buffer they reference is still alive.
+    ConstantForceEffectStorage constantForceStorage_{};
+    ConditionEffectStorage springStorage_{};
+    ConditionEffectStorage damperStorage_{};
     Microsoft::WRL::ComPtr<IDirectInputEffect> constantForceEffect_;
     Microsoft::WRL::ComPtr<IDirectInputEffect> springEffect_;
     Microsoft::WRL::ComPtr<IDirectInputEffect> damperEffect_;
+    std::optional<float> lastAppliedGain_;
 };
 
 } // namespace rvwheel::devices

@@ -9,6 +9,7 @@
 
 #include "rvwheel/dal/DeviceManager.hpp"
 #include "rvwheel/dal/Diagnostics.hpp"
+#include "rvwheel/dal/ForceFeedbackCooperativeLevel.hpp"
 #include "rvwheel/devices/DirectInputDevice.hpp"
 
 namespace rvwheel::devices {
@@ -23,7 +24,9 @@ public:
     DirectInputDeviceEnumerator(HINSTANCE moduleInstance,
                                 HWND window,
                                 rvwheel::dal::DiagnosticSink diagnostics,
-                                bool requestExclusiveForceFeedbackAccess = false);
+                                bool requestExclusiveForceFeedbackAccess = false,
+                                rvwheel::dal::ForceFeedbackCooperativeLevel forceFeedbackCooperativeLevel =
+                                    rvwheel::dal::ForceFeedbackCooperativeLevel::Background);
 
     std::vector<std::unique_ptr<rvwheel::dal::IWheelDevice>> Enumerate() override;
 
@@ -35,6 +38,8 @@ private:
     HWND window_;
     rvwheel::dal::DiagnosticSink diagnostics_;
     bool requestExclusiveForceFeedbackAccess_ = false;
+    rvwheel::dal::ForceFeedbackCooperativeLevel forceFeedbackCooperativeLevel_ =
+        rvwheel::dal::ForceFeedbackCooperativeLevel::Background;
     Microsoft::WRL::ComPtr<IDirectInput8A> directInput_;
     bool creationFailedOnce_ = false;
 };

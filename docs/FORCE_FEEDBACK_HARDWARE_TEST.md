@@ -90,6 +90,176 @@ trying again — do not simply retry with lower numbers and no explanation.
 
 ## Incident log
 
+### Foreground acquisition investigation
+
+The probe now accepts an explicit cooperative-level policy for real FFB
+hardware-test modes. The first `DISCL_FOREGROUND` experiment is intentionally
+stop-only and uses a valid top-level window that remains invisible and
+unfocused:
+
+```powershell
+.\build\tools\device_probe\Release\rvwheel_device_probe.exe `
+  --ffb-hw-test-stop-only `
+  --ffb-cooperative-level foreground
+```
+
+**2026-08-09 — Unfocused foreground stop-only experiment: completed, no
+physical change observed.** Exact command shown above, Release build. The
+top-level diagnostic window was valid but deliberately invisible and was
+confirmed not to equal `GetForegroundWindow()`. `SetCooperativeLevel` did
+not report a failure, but the initial `Acquire()` and all ten retry attempts
+failed immediately with **`0x80070005` = `DIERR_OTHERAPPHASPRIO`**. Input
+was not readable (`connected=false`), no effect was created or started,
+`StopForceFeedback()` returned `Ok`, and the diagnostic correctly exited
+with code `1` because exclusive acquisition never succeeded. The operator
+confirmed **no apparent movement, resistance change, or vibration**.
+
+This confirms that a valid but unfocused top-level window cannot acquire the
+G923 under `DISCL_EXCLUSIVE | DISCL_FOREGROUND`. It does not yet answer
+whether a genuinely focused top-level window retains exclusivity beyond the
+previous two-second failure point.
+
+The next gated stop-only command shows a small tool window and verifies that
+Windows actually granted it foreground ownership before touching DirectInput:
+
+```powershell
+.\build\tools\device_probe\Release\rvwheel_device_probe.exe `
+  --ffb-hw-test-stop-only `
+  --ffb-cooperative-level foreground-focused
+```
+
+**2026-08-09 — Focused foreground stop-only experiment: passed.** Exact
+command shown above, Release build. The dedicated visible tool window was
+confirmed as the exact `GetForegroundWindow()` HWND before DirectInput was
+initialized. Initial `Acquire()` succeeded with
+`DISCL_EXCLUSIVE | DISCL_FOREGROUND`; input remained readable and connected;
+`StopForceFeedback()` returned `Ok`; and the diagnostic exited `0`. No effect
+was created or started. The operator was not holding the wheel and reported
+zero additional perceptible movement or behavior. The wheel's pre-existing
+idle autocenter (it normally stays centered and returns toward center when
+moved) remained, and is explicitly **not attributed to RVWheel**.
+
+This proves foreground acquisition works on the real G923 while the owning
+window has focus. The short check lasted only about 200 ms, so it does not
+yet prove exclusivity remains beyond the prior ~2-second failure point.
+
+### Five-second foreground retention probe
+
+The focused stop-only mode holds the foreground window for five seconds,
+polls input and `GetForceFeedbackState` throughout, and validates the actual
+device-wide `DISFFC_STOPALL` HRESULT at the end. It still creates and starts
+no effect. The exact command is unchanged from the successful short focused
+test above, but must be run from the newly rebuilt binary. This retention
+probe was executed only after a new explicit operator authorization.
+
+Expected success: five seconds, every input poll readable, foreground held,
+`GetForceFeedbackState` remaining successful, and final device-wide STOPALL
+returning `Ok`. Any loss or HRESULT is a valid diagnostic result and blocks
+the weak-effect foreground test.
+
+**2026-08-09 — Five-second focused foreground retention: passed.** Release
+build, same `foreground-focused` command. Initial acquisition succeeded;
+the probe ran for **5.01 seconds** with **245/245 input polls readable**;
+the diagnostic HWND retained foreground throughout; and
+`GetForceFeedbackState()` remained successful, reporting
+`ACTUATORSOFF | EMPTY | POWERON`. Final device-wide `DISFFC_STOPALL`
+returned `Ok` and the process exited `0`. No effect was created or started.
+The operator confirmed **no physical change beyond the pre-existing idle
+autocenter**.
+
+This is the first run to hold exclusive foreground access beyond the prior
+~2-second background-exclusive failure point. It strongly supports the
+cooperative-level hypothesis, but does not by itself prove that updating a
+real effect remains stable; that requires a separately authorized weak-effect
+run and must not be described as completed yet.
+
+**2026-08-09 — Focused foreground weak spring: failed at the same ~2-second
+boundary.** With separate explicit authorization, the Release diagnostic ran
+one spring at fixed `gain=0.2`, `strength=0.2`, a slow ramp, and a five-second
+limit under `DISCL_EXCLUSIVE | DISCL_FOREGROUND`. Creation/start succeeded and
+the controller remained `Active` through approximately 2.0 seconds. It then
+entered `Faulted`; subsequent spring `SetParameters` calls returned
+**`0x80040205 = DIERR_NOTEXCLUSIVEACQUIRED`**, exactly as in the earlier
+background-exclusive runs. This falsifies the proposed foreground-mode fix:
+foreground ownership is sufficient to retain an idle exclusive acquisition,
+but not sufficient to retain it while this real effect is being updated.
+
+The run also exposed two diagnostic defects, now fixed before any further
+hardware run: a faulted test returned process exit code `0`, and a failed stop
+could re-arm the safety controller's stop edge on every tick, producing warning
+spam. The test now stops at the first backend fault, reports focus/poll/fault
+signals separately, preserves the first fault reason, and returns nonzero.
+An automated regression test proves secondary failures while already
+`Faulted` cannot generate repeated stop edges.
+
+Post-run review against Microsoft's DirectInput contract found two additional
+backend defects and fixed them before authorizing any repeat:
+
+1. `DIEFFECT::lpvTypeSpecificParams` pointed at function-local
+   `DICONDITION`/`DICONSTANTFORCE` values. DirectInput does not make a private
+   copy and requires these buffers to remain valid for the effect lifetime, so
+   the effect retained dangling pointers after the function returned. The
+   buffers, axes, and directions now have device-owned lifetime and outlive
+   their COM effect objects.
+2. Every parameter update included `DIEP_START`, which explicitly restarts an
+   already-playing effect, and unchanged commands were resent approximately
+   60 times per second. Updates now use the minimal documented
+   `DIEP_TYPESPECIFICPARAMS` flag and identical values are suppressed. A stopped
+   effect is released and explicitly created/started on the next activation.
+
+Both Debug and Release builds pass all 200 automated tests after these changes.
+They are well-founded correctness fixes, but **their effect on the real
+two-second failure is not yet known**. A new weak-spring run still requires
+separate explicit authorization and observation.
+
+**2026-08-09 — Focused weak spring after buffer/update fixes: active for five
+seconds, unsafe refresh interaction identified; final stop failed.** The spring
+controller remained `Active` for the full five-second window, with input polls
+readable and foreground retained. The final device-wide STOPALL nevertheless
+returned `0x80040205 = DIERR_NOTEXCLUSIVEACQUIRED`, so this run is a failure and
+does not validate FFB.
+
+The decisive diagnostic was a second
+`Initial Acquire() succeeded with EXCLUSIVE | FOREGROUND` from the same process.
+`CreateManager` uses a five-second discovery interval, and the weak-effect test
+continued calling `RefreshIfDue()` while holding the effect. The initial device
+was acquired before the three-second safety countdown; therefore the refresh
+became due approximately two seconds after the effect began. Enumeration
+constructed and exclusively acquired a duplicate DirectInput device before
+`DeviceManager` could recognize its identical `DeviceId` and discard it. That
+second acquisition revoked exclusivity from the original effect owner. The
+timing identity (`3 s countdown + ~2 s active = 5 s refresh`) and the second
+successful Acquire make this the confirmed cause of the previously mysterious
+two-second downgrade.
+
+The operator's physical observation matches that software timeline: resistance
+became perceptibly **lower than the G923 baseline** for a short interval, then
+rapidly returned to normal. The reduced resistance is consistent with this
+test's device-wide `DIPROP_FFGAIN=0.2`; the rapid return is consistent with the
+duplicate device's acquisition/destruction stopping the original effect near
+the refresh boundary. The wheel was back to its normal baseline afterward.
+
+The hardware diagnostic now performs initial discovery only and never
+re-enumerates while its exclusive effect is active; `Poll()` still detects a
+physical disconnect. A failed `GetForceFeedbackState()` is also latched and
+causes the next apply call to fault immediately. The same ownership rule must
+be enforced when FFB is eventually integrated into the production bridge:
+hotplug discovery cannot acquire a duplicate device during an exclusive FFB
+session. The correction has passed all automated tests but still requires a
+new separately authorized G923 run before the incident can be closed.
+
+**2026-08-09 — Corrected ownership lifecycle, weak spring validation run #1:
+technical and physical pass.** With periodic rediscovery removed from the exclusive session,
+the controller remained `Active` for the full five seconds. There was exactly
+one successful exclusive foreground Acquire, input polls remained readable,
+the diagnostic retained foreground throughout, final STOPALL returned `Ok`,
+and the process exited `0`. No `DIERR_NOTEXCLUSIVEACQUIRED` occurred. This is
+the first passing real-effect run after the ownership fix. The operator
+confirmed the altered resistance remained present while the diagnostic window
+was open and returned to the normal G923 baseline after the test stopped, with
+no residual abnormal force. The incident is not yet considered closed until
+consecutive authorized runs reproduce the pass.
+
 **2026-08-09 — Step 4 (stop only): passed.** Real G923, exclusive
 acquisition succeeded, input stayed readable, `StopForceFeedback()`
 returned `Ok` with no effect ever created. No motion observed. See

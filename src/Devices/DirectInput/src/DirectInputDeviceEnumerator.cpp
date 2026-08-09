@@ -1,11 +1,14 @@
 #include "DirectInputDeviceEnumerator.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "DirectInputAxisMapping.hpp"
+#include "rvwheel/devices/DirectInputCooperativeLevel.hpp"
 
 namespace rvwheel::devices {
 
@@ -86,16 +89,31 @@ BOOL CALLBACK CollectDeviceInstanceCallback(LPCDIDEVICEINSTANCEA instance, LPVOI
     return DeviceId::FromValue(Fnv1aHash(bytes, sizeof(bytes)));
 }
 
+[[nodiscard]] std::string FormatHresult(HRESULT hr) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "0x%08lX", static_cast<unsigned long>(hr));
+    return std::string(buffer);
+}
+
+[[nodiscard]] const char* CooperativeLevelName(DWORD flags) noexcept {
+    if ((flags & DISCL_EXCLUSIVE) != 0) {
+        return (flags & DISCL_FOREGROUND) != 0 ? "EXCLUSIVE | FOREGROUND" : "EXCLUSIVE | BACKGROUND";
+    }
+    return (flags & DISCL_FOREGROUND) != 0 ? "NONEXCLUSIVE | FOREGROUND" : "NONEXCLUSIVE | BACKGROUND";
+}
+
 } // namespace
 
 DirectInputDeviceEnumerator::DirectInputDeviceEnumerator(HINSTANCE moduleInstance,
                                                          HWND window,
                                                          rvwheel::dal::DiagnosticSink diagnostics,
-                                                         bool requestExclusiveForceFeedbackAccess)
+                                                         bool requestExclusiveForceFeedbackAccess,
+                                                         rvwheel::dal::ForceFeedbackCooperativeLevel forceFeedbackCooperativeLevel)
     : moduleInstance_(moduleInstance),
       window_(window),
       diagnostics_(std::move(diagnostics)),
-      requestExclusiveForceFeedbackAccess_(requestExclusiveForceFeedbackAccess) {}
+      requestExclusiveForceFeedbackAccess_(requestExclusiveForceFeedbackAccess),
+      forceFeedbackCooperativeLevel_(forceFeedbackCooperativeLevel) {}
 
 bool DirectInputDeviceEnumerator::EnsureDirectInput() noexcept {
     if (directInput_) {
@@ -140,10 +158,13 @@ std::unique_ptr<rvwheel::dal::IWheelDevice> DirectInputDeviceEnumerator::CreateD
     // FFB-capable hardware is not automatically acquired exclusively.
     // Input-only clients must coexist with the game and vendor software;
     // only an explicit FFB owner opts into exclusive access.
-    const bool useExclusiveAccess = hasForceFeedback && requestExclusiveForceFeedbackAccess_;
-    const DWORD cooperativeFlags = DISCL_BACKGROUND | (useExclusiveAccess ? DISCL_EXCLUSIVE : DISCL_NONEXCLUSIVE);
-    if (FAILED(device->SetCooperativeLevel(window_, cooperativeFlags))) {
-        diagnostics_(LogLevel::Warning, "SetCooperativeLevel failed; skipping device");
+    const DWORD cooperativeFlags = SelectDirectInputCooperativeFlags(
+        hasForceFeedback, requestExclusiveForceFeedbackAccess_, forceFeedbackCooperativeLevel_);
+    const HRESULT cooperativeHr = device->SetCooperativeLevel(window_, cooperativeFlags);
+    if (FAILED(cooperativeHr)) {
+        diagnostics_(LogLevel::Warning,
+                     std::string("SetCooperativeLevel(") + CooperativeLevelName(cooperativeFlags) + ") failed: " +
+                         FormatHresult(cooperativeHr) + "; skipping device");
         return nullptr;
     }
 
@@ -152,9 +173,15 @@ std::unique_ptr<rvwheel::dal::IWheelDevice> DirectInputDeviceEnumerator::CreateD
         return nullptr; // Reports axes via dwAxes, but none answered a range query; not usable.
     }
 
-    if (FAILED(device->Acquire())) {
-        diagnostics_(LogLevel::Warning, "Initial Acquire() failed; the device will retry acquisition on first Poll()");
+    const HRESULT acquireHr = device->Acquire();
+    if (FAILED(acquireHr)) {
+        diagnostics_(LogLevel::Warning,
+                     std::string("Initial Acquire() with ") + CooperativeLevelName(cooperativeFlags) + " failed: " +
+                         FormatHresult(acquireHr) + "; the device will retry acquisition on first Poll()");
         // Not fatal: DirectInputDevice::Poll() re-attempts Acquire() every call while unacquired.
+    } else if ((cooperativeFlags & DISCL_EXCLUSIVE) != 0) {
+        diagnostics_(LogLevel::Info,
+                     std::string("Initial Acquire() succeeded with ") + CooperativeLevelName(cooperativeFlags));
     }
 
     dal::DeviceInfo info{};
@@ -178,7 +205,9 @@ std::unique_ptr<rvwheel::dal::IWheelDevice> DirectInputDeviceEnumerator::CreateD
     info.capabilities.buttonCount = static_cast<std::uint16_t>(std::min<DWORD>(caps.dwButtons, static_cast<DWORD>(dal::kMaxButtons)));
     info.capabilities.povCount = static_cast<std::uint8_t>(std::min<DWORD>(caps.dwPOVs, static_cast<DWORD>(dal::kMaxPovCount)));
 
-    return std::make_unique<DirectInputDevice>(std::move(device), std::move(info), std::move(discoveredAxes), diagnostics_);
+    const bool exclusiveFfbRequested = (cooperativeFlags & DISCL_EXCLUSIVE) != 0;
+    return std::make_unique<DirectInputDevice>(std::move(device), std::move(info), std::move(discoveredAxes), diagnostics_,
+                                               exclusiveFfbRequested);
 }
 
 std::vector<std::unique_ptr<rvwheel::dal::IWheelDevice>> DirectInputDeviceEnumerator::Enumerate() {

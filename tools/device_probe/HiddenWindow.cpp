@@ -12,7 +12,7 @@ LRESULT CALLBACK HiddenWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
 
 } // namespace
 
-HiddenWindow::HiddenWindow() : instance_(GetModuleHandleW(nullptr)) {
+HiddenWindow::HiddenWindow(HiddenWindowMode mode) : instance_(GetModuleHandleW(nullptr)), mode_(mode) {
     WNDCLASSEXW windowClass{};
     windowClass.cbSize = sizeof(WNDCLASSEXW);
     windowClass.lpfnWndProc = &HiddenWindowProc;
@@ -24,9 +24,25 @@ HiddenWindow::HiddenWindow() : instance_(GetModuleHandleW(nullptr)) {
         return; // hwnd_ stays nullptr; IsValid() reports the failure to the caller.
     }
 
-    // HWND_MESSAGE: a message-only window. No visual presence, no taskbar
-    // entry, no paint messages -- exactly what a headless probe needs.
-    hwnd_ = CreateWindowExW(0, kWindowClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance_, nullptr);
+    if (mode_ == HiddenWindowMode::MessageOnly) {
+        // No visual presence, no taskbar entry, no paint messages -- the
+        // existing headless window used by all ordinary input paths.
+        hwnd_ = CreateWindowExW(0, kWindowClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance_, nullptr);
+    } else if (mode_ == HiddenWindowMode::TopLevelUnfocused) {
+        // SetCooperativeLevel's documented contract requires a top-level
+        // process-owned HWND. This diagnostic variant satisfies that part
+        // while deliberately remaining invisible and unfocused, so a real
+        // Acquire() result answers whether DISCL_FOREGROUND also requires
+        // active foreground ownership before we add any focus-stealing UI.
+        hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kWindowClassName,
+                                L"RVWheel FFB foreground acquisition diagnostic", WS_POPUP,
+                                0, 0, 1, 1, nullptr, nullptr, instance_, nullptr);
+    } else {
+        hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, kWindowClassName,
+                                L"RVWheel FFB foreground acquisition test - do not switch windows",
+                                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                                CW_USEDEFAULT, CW_USEDEFAULT, 640, 120, nullptr, nullptr, instance_, nullptr);
+    }
 }
 
 HiddenWindow::~HiddenWindow() {
@@ -44,6 +60,23 @@ void HiddenWindow::PumpMessages() noexcept {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+}
+
+bool HiddenWindow::ActivateForForegroundDiagnostic() noexcept {
+    if (hwnd_ == nullptr) {
+        return false;
+    }
+    if (mode_ != HiddenWindowMode::TopLevelFocused) {
+        return IsForeground();
+    }
+
+    ShowWindow(hwnd_, SW_SHOWNORMAL);
+    UpdateWindow(hwnd_);
+    SetForegroundWindow(hwnd_);
+    SetActiveWindow(hwnd_);
+    SetFocus(hwnd_);
+    PumpMessages();
+    return IsForeground();
 }
 
 } // namespace rvwheel::tools::probe

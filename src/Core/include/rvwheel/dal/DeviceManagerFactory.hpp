@@ -29,6 +29,7 @@
 
 #include "rvwheel/dal/DeviceManager.hpp"
 #include "rvwheel/dal/Diagnostics.hpp"
+#include "rvwheel/dal/ForceFeedbackCooperativeLevel.hpp"
 
 namespace rvwheel::dal {
 
@@ -42,6 +43,12 @@ struct DeviceManagerInitParams {
     // cooperative access. Input-only consumers must leave this false so
     // the game and vendor software can keep using the wheel concurrently.
     bool requestExclusiveForceFeedbackAccess = false;
+
+    // Only consulted when the explicit exclusive-FFB request above is
+    // true. Background preserves the existing headless behavior;
+    // Foreground is an opt-in diagnostic experiment and requires `window`
+    // to be a foreground, top-level HWND owned by this process.
+    ForceFeedbackCooperativeLevel forceFeedbackCooperativeLevel = ForceFeedbackCooperativeLevel::Background;
 };
 
 // Builds a production DeviceManager wired to the DirectInput backend

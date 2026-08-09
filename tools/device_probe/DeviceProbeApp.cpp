@@ -100,7 +100,9 @@ void PrintDiagnostic(LogLevel level, std::string_view message) {
 }
 
 [[nodiscard]] std::unique_ptr<DeviceManager> CreateManager(const HiddenWindow& window,
-                                                            bool requestExclusiveForceFeedbackAccess = false) {
+                                                            bool requestExclusiveForceFeedbackAccess = false,
+                                                            rvwheel::dal::ForceFeedbackCooperativeLevel forceFeedbackLevel =
+                                                                rvwheel::dal::ForceFeedbackCooperativeLevel::Background) {
     DeviceManagerInitParams params{};
     params.instance = window.Instance();
     params.window = window.Handle();
@@ -111,7 +113,29 @@ void PrintDiagnostic(LogLevel level, std::string_view message) {
     // shipped: reading the wheel must not block G HUB or the game from
     // reading it too. See DirectInputDeviceEnumerator.cpp.
     params.requestExclusiveForceFeedbackAccess = requestExclusiveForceFeedbackAccess;
+    params.forceFeedbackCooperativeLevel = forceFeedbackLevel;
     return CreateDefaultDeviceManager(params);
+}
+
+[[nodiscard]] bool RequestsForegroundFfb(const CliOptions& options) noexcept {
+    return options.ffbTestCooperativeLevel != FfbTestCooperativeLevel::Background;
+}
+
+[[nodiscard]] bool RequestsFocusedForegroundFfb(const CliOptions& options) noexcept {
+    return options.ffbTestCooperativeLevel == FfbTestCooperativeLevel::ForegroundFocused;
+}
+
+[[nodiscard]] rvwheel::dal::ForceFeedbackCooperativeLevel RequestedFfbCooperativeLevel(
+    const CliOptions& options) noexcept {
+    return RequestsForegroundFfb(options) ? rvwheel::dal::ForceFeedbackCooperativeLevel::Foreground
+                                          : rvwheel::dal::ForceFeedbackCooperativeLevel::Background;
+}
+
+[[nodiscard]] HiddenWindowMode RequestedFfbWindowMode(const CliOptions& options) noexcept {
+    if (RequestsFocusedForegroundFfb(options)) {
+        return HiddenWindowMode::TopLevelFocused;
+    }
+    return RequestsForegroundFfb(options) ? HiddenWindowMode::TopLevelUnfocused : HiddenWindowMode::MessageOnly;
 }
 
 void PrintNoDevicesHelp() {
@@ -1352,13 +1376,35 @@ int DeviceProbeApp::RunFfbHardwareTestStopOnly() {
                  "the real StopForceFeedback() exactly once. No effect is ever created or started here.\n"
                  "If you feel ANY motion, resistance, or vibration at any point, disconnect the wheel now.\n\n";
 
-    HiddenWindow window;
+    const bool foregroundExperiment = RequestsForegroundFfb(options_);
+    const bool focusedForegroundExperiment = RequestsFocusedForegroundFfb(options_);
+    HiddenWindow window(RequestedFfbWindowMode(options_));
     if (!window.IsValid()) {
         std::cerr << "Failed to create the hidden Win32 window required for DirectInput.\n";
         return 1;
     }
 
-    auto manager = CreateManager(window, /*requestExclusiveForceFeedbackAccess=*/true);
+    std::cout << "Cooperative level: EXCLUSIVE | " << (foregroundExperiment ? "FOREGROUND" : "BACKGROUND") << "\n";
+    if (foregroundExperiment) {
+        if (focusedForegroundExperiment) {
+            std::cout << "Showing and activating the dedicated foreground diagnostic window now. Do not switch "
+                         "to another window until this short stop-only test finishes.\n";
+            if (!window.ActivateForForegroundDiagnostic()) {
+                std::cerr << "Windows did not grant foreground ownership to the diagnostic window. No DirectInput "
+                             "device access was attempted; exiting safely.\n";
+                return 1;
+            }
+            std::cout << "GetForegroundWindow() matches the diagnostic HWND: yes\n\n";
+        } else {
+            std::cout << "Foreground experiment window: valid top-level HWND, deliberately invisible/unfocused.\n"
+                         "GetForegroundWindow() matches it: "
+                      << (window.IsForeground() ? "yes (unexpected)" : "no (expected for this first experiment)")
+                      << "\n\n";
+        }
+    }
+
+    auto manager = CreateManager(window, /*requestExclusiveForceFeedbackAccess=*/true,
+                                 RequestedFfbCooperativeLevel(options_));
     manager->RefreshIfDue();
     window.PumpMessages();
 
@@ -1376,20 +1422,44 @@ int DeviceProbeApp::RunFfbHardwareTestStopOnly() {
 
     std::cout << "Target device: " << device->Info().name << " ("
               << FormatVendorProductId(device->Info().vendorId, device->Info().productId) << ")\n";
-    std::cout << "Attempting exclusive acquisition (first-ever real attempt in this project -- see "
-                 "docs/research/FORCE_FEEDBACK_FEASIBILITY.md, open question 2)...\n";
+    std::cout << "Attempting exclusive acquisition without creating an effect. Exact SetCooperativeLevel/Acquire "
+                 "HRESULT diagnostics follow on stderr.\n";
 
-    // No FFB call yet: just confirm input polling still works under
-    // exclusive acquisition, which is itself an open question this
-    // resolves either way.
+    // No FFB call yet: confirm input and GetForceFeedbackState stay usable
+    // under exclusive acquisition. The focused experiment deliberately
+    // runs beyond the prior ~2-second failure point while creating no
+    // effect; other modes retain the original short acquisition check.
+    const auto acquisitionProbeDuration = focusedForegroundExperiment ? std::chrono::seconds{5}
+                                                                       : std::chrono::milliseconds{200};
+    const auto acquisitionProbeStart = std::chrono::steady_clock::now();
     bool anyPollOk = false;
-    for (int i = 0; i < 10; ++i) {
+    bool allPollsOk = true;
+    bool retainedForeground = true;
+    std::uint64_t acquisitionPollCount = 0;
+    while (std::chrono::steady_clock::now() - acquisitionProbeStart < acquisitionProbeDuration) {
         window.PumpMessages();
-        if (device->Poll().IsOk()) {
-            anyPollOk = true;
+        if (focusedForegroundExperiment && !window.IsForeground()) {
+            retainedForeground = false;
+            std::cerr << "The diagnostic window lost foreground ownership; ending the no-effect probe.\n";
+            break;
         }
+        const Status pollStatus = device->Poll();
+        if (pollStatus.IsOk()) {
+            anyPollOk = true;
+        } else {
+            allPollsOk = false;
+        }
+        ++acquisitionPollCount;
         std::this_thread::sleep_for(std::chrono::milliseconds{20});
     }
+    const auto acquisitionProbeElapsed = std::chrono::steady_clock::now() - acquisitionProbeStart;
+    std::cout << "No-effect acquisition probe: " << std::fixed << std::setprecision(2)
+              << std::chrono::duration<double>(acquisitionProbeElapsed).count() << "s, " << acquisitionPollCount
+              << " polls, all polls readable=" << (allPollsOk && anyPollOk ? "yes" : "no");
+    if (focusedForegroundExperiment) {
+        std::cout << ", foreground retained=" << (retainedForeground ? "yes" : "no");
+    }
+    std::cout << "\n";
     std::cout << "Input still readable under exclusive acquisition: " << (anyPollOk ? "yes" : "no") << "\n";
     std::cout << "  steering=" << device->State().steering << " throttle=" << device->State().throttle
               << " connected=" << (device->IsConnected() ? "true" : "false") << "\n\n";
@@ -1406,7 +1476,7 @@ int DeviceProbeApp::RunFfbHardwareTestStopOnly() {
     std::cout << "Test finished. Before doing anything else with force feedback, confirm with whoever was "
                  "physically observing the wheel that NO motion, resistance, or vibration occurred at any "
                  "point above.\n";
-    return stopStatus.IsOk() ? 0 : 1;
+    return anyPollOk && allPollsOk && retainedForeground && stopStatus.IsOk() ? 0 : 1;
 }
 
 int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
@@ -1431,13 +1501,19 @@ int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
               << "If the force feels stronger than expected, oscillates, or anything else feels wrong, press "
                  "Ctrl+C now -- the wheel will stop.\n\n";
 
-    HiddenWindow window;
+    HiddenWindow window(RequestedFfbWindowMode(options_));
     if (!window.IsValid()) {
         std::cerr << "Failed to create the hidden Win32 window required for DirectInput.\n";
         return 1;
     }
+    if (RequestsFocusedForegroundFfb(options_) && !window.ActivateForForegroundDiagnostic()) {
+        std::cerr << "Windows did not grant foreground ownership to the diagnostic window. No DirectInput device "
+                     "access was attempted; exiting safely.\n";
+        return 1;
+    }
 
-    auto manager = CreateManager(window, /*requestExclusiveForceFeedbackAccess=*/true);
+    auto manager = CreateManager(window, /*requestExclusiveForceFeedbackAccess=*/true,
+                                 RequestedFfbCooperativeLevel(options_));
     manager->RefreshIfDue();
     window.PumpMessages();
 
@@ -1478,6 +1554,11 @@ int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
         engine.Enable();
 
         const auto start = std::chrono::steady_clock::now();
+        auto lastPrint = start - std::chrono::milliseconds{200};
+        bool backendFaulted = false;
+        bool inputPollFailed = false;
+        bool foregroundLost = false;
+        std::string faultReason;
         while (!stopRequested_.load()) {
             const auto now = std::chrono::steady_clock::now();
             const auto elapsed = now - start;
@@ -1486,34 +1567,82 @@ int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
             }
 
             window.PumpMessages();
-            manager->RefreshIfDue();
-            device->Poll();
+            if (RequestsFocusedForegroundFfb(options_) && !window.IsForeground()) {
+                foregroundLost = true;
+                std::cerr << "The diagnostic window lost foreground ownership; stopping the effect immediately.\n";
+                break;
+            }
+            // Do not refresh/re-enumerate while this instance owns an
+            // active exclusive effect. The DirectInput enumerator acquires
+            // each newly constructed candidate; creating a duplicate for
+            // this same wheel would steal exclusivity from `device` before
+            // DeviceManager recognizes the duplicate and discards it.
+            // Poll() below is sufficient to detect a physical disconnect
+            // during this short, single-device diagnostic.
+            const Status pollStatus = device->Poll();
+            if (!pollStatus.IsOk()) {
+                inputPollFailed = true;
+                std::cerr << "Input/FFB state poll failed: " << FormatStatusCode(pollStatus.Code());
+                if (!pollStatus.Message().empty()) {
+                    std::cerr << " (" << pollStatus.Message() << ")";
+                }
+                std::cerr << "\n";
+                break;
+            }
 
             const rvwheel::ffb::VehicleTelemetry telemetry{};
             const auto decision = engine.Tick(*device, telemetry, device->State().steering, now, now);
 
-            std::cout << "[t=" << std::fixed << std::setprecision(1) << std::chrono::duration<double>(elapsed).count()
-                      << "s] state=" << rvwheel::ffb::ToString(engine.State()) << " spring=" << decision.command.spring
-                      << " damper=" << decision.command.damper << " gain=" << decision.command.gain << "\n";
+            if (now - lastPrint >= std::chrono::milliseconds{200}) {
+                lastPrint = now;
+                std::cout << "[t=" << std::fixed << std::setprecision(1)
+                          << std::chrono::duration<double>(elapsed).count()
+                          << "s] state=" << rvwheel::ffb::ToString(engine.State())
+                          << " spring=" << decision.command.spring << " damper=" << decision.command.damper
+                          << " gain=" << decision.command.gain << "\n";
+            }
+
+            if (engine.State() == rvwheel::ffb::ForceFeedbackState::Faulted) {
+                backendFaulted = true;
+                faultReason = engine.Diagnostics(now).lastFaultReason;
+                std::cerr << "Force-feedback backend faulted; stopping the test immediately: " << faultReason << "\n";
+                break;
+            }
 
             std::this_thread::sleep_for(kTickInterval);
         }
+
+        std::cout << "\nStopping...\n";
+        // EmergencyStop is intentionally used even from Faulted: it emits
+        // one immediate zero/stop edge instead of attempting a long ramp
+        // through an exclusive-access failure.
+        engine.EmergencyStop();
+        (void)engine.TickWithoutTelemetry(*device, std::chrono::steady_clock::now());
+
+        // Belt-and-suspenders explicit stop, regardless of the engine's final state.
+        const Status finalStop = device->StopForceFeedback();
+        std::cout << "Final StopForceFeedback(): " << FormatStatusCode(finalStop.Code());
+        if (!finalStop.Message().empty()) {
+            std::cout << " (" << finalStop.Message() << ")";
+        }
+        std::cout << "\n";
+
+        if (backendFaulted) {
+            std::cout << "Backend fault: " << faultReason << "\n";
+        }
+        std::cout << "Input polls remained readable: " << (inputPollFailed ? "no" : "yes") << "\n";
+        if (RequestsFocusedForegroundFfb(options_)) {
+            std::cout << "Foreground retained: " << (foregroundLost ? "no" : "yes") << "\n";
+        }
+
+        std::cout << "\nTest finished. Confirm the effect felt correct and stopped completely -- and that the wheel "
+                     "is not still resisting or centering -- before increasing gain or trying the other effect, per "
+                     "docs/FORCE_FEEDBACK_HARDWARE_TEST.md.\n";
+        return !backendFaulted && !inputPollFailed && !foregroundLost && finalStop.IsOk() ? 0 : 1;
     }
 
-    std::cout << "\nStopping...\n";
-    engine.Disable();
-    for (int i = 0; i < 200 && engine.State() != rvwheel::ffb::ForceFeedbackState::Disabled; ++i) {
-        engine.TickWithoutTelemetry(*device, std::chrono::steady_clock::now());
-        std::this_thread::sleep_for(kTickInterval);
-    }
-    // Belt-and-suspenders explicit stop, regardless of the engine's final state.
-    const Status finalStop = device->StopForceFeedback();
-    std::cout << "Final StopForceFeedback(): " << FormatStatusCode(finalStop.Code()) << "\n";
-
-    std::cout << "\nTest finished. Confirm the effect felt correct and stopped completely -- and that the wheel "
-                 "is not still resisting or centering -- before increasing gain or trying the other effect, per "
-                 "docs/FORCE_FEEDBACK_HARDWARE_TEST.md.\n";
-    return 0;
+    std::cout << "\nTest cancelled before force feedback was enabled.\n";
+    return 1;
 }
 
 } // namespace rvwheel::tools::probe

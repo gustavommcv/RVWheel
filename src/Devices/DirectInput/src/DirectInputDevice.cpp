@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -24,6 +25,18 @@ using dal::StatusCode;
 // effect type; this is the one constant every Apply* helper below scales
 // its normalized [-1,1]/[0,1] input against.
 constexpr LONG kDIForceScale = 10000;
+
+// Per Microsoft's SetParameters documentation, DIEP_START explicitly
+// restarts an effect that is already playing. Runtime magnitude changes
+// only need the type-specific buffer; omitting START lets DirectInput keep
+// playback continuous and restart only if the driver genuinely requires
+// it for a non-dynamic parameter.
+constexpr DWORD kEffectParameterUpdateFlags = DIEP_TYPESPECIFICPARAMS;
+static_assert((kEffectParameterUpdateFlags & DIEP_START) == 0);
+
+[[nodiscard]] float FiniteClamp(float value, float minimum, float maximum) noexcept {
+    return std::isfinite(value) ? std::clamp(value, minimum, maximum) : 0.0f;
+}
 
 // DirectInput reports POVs in hundredths of a degree, clockwise from north,
 // or 0xFFFFFFFF when centered/no input. Buckets into 8 sectors of 45
@@ -69,16 +82,43 @@ constexpr LONG kDIForceScale = 10000;
     return std::string(buffer);
 }
 
+[[nodiscard]] std::string FormatForceFeedbackState(DWORD flags) {
+    std::string result;
+    const auto append = [&result](const char* label) {
+        if (!result.empty()) {
+            result += '|';
+        }
+        result += label;
+    };
+    if ((flags & DIGFFS_ACTUATORSON) != 0) append("ACTUATORSON");
+    if ((flags & DIGFFS_ACTUATORSOFF) != 0) append("ACTUATORSOFF");
+    if ((flags & DIGFFS_DEVICELOST) != 0) append("DEVICELOST");
+    if ((flags & DIGFFS_EMPTY) != 0) append("EMPTY");
+    if ((flags & DIGFFS_PAUSED) != 0) append("PAUSED");
+    if ((flags & DIGFFS_POWEROFF) != 0) append("POWEROFF");
+    if ((flags & DIGFFS_SAFETYSWITCHON) != 0) append("SAFETYSWITCHON");
+    if ((flags & DIGFFS_SAFETYSWITCHOFF) != 0) append("SAFETYSWITCHOFF");
+    if ((flags & DIGFFS_USERFFSWITCHON) != 0) append("USERFFSWITCHON");
+    if ((flags & DIGFFS_USERFFSWITCHOFF) != 0) append("USERFFSWITCHOFF");
+    if ((flags & DIGFFS_POWERON) != 0) append("POWERON");
+    if (result.empty()) {
+        result = "none-reported";
+    }
+    return result;
+}
+
 } // namespace
 
 DirectInputDevice::DirectInputDevice(Microsoft::WRL::ComPtr<IDirectInputDevice8A> device,
                                       rvwheel::dal::DeviceInfo info,
                                       std::vector<DiscoveredAxis> discoveredAxes,
-                                      rvwheel::dal::DiagnosticSink diagnostics)
+                                      rvwheel::dal::DiagnosticSink diagnostics,
+                                      bool exclusiveForceFeedbackAccessRequested)
     : device_(std::move(device)),
       info_(std::move(info)),
       discoveredAxes_(std::move(discoveredAxes)),
-      diagnostics_(std::move(diagnostics)) {}
+      diagnostics_(std::move(diagnostics)),
+      exclusiveForceFeedbackAccessRequested_(exclusiveForceFeedbackAccessRequested) {}
 
 DirectInputDevice::~DirectInputDevice() {
     if (device_) {
@@ -275,6 +315,29 @@ Status DirectInputDevice::Poll() noexcept {
         return Status::NotConnected("DirectInput GetDeviceState failed; device may be disconnected");
     }
 
+    if (exclusiveForceFeedbackAccessRequested_) {
+        DWORD forceFeedbackState = 0;
+        const HRESULT stateHr = device_->GetForceFeedbackState(&forceFeedbackState);
+        const bool resultChanged = !lastForceFeedbackStateQueryResult_ || *lastForceFeedbackStateQueryResult_ != stateHr;
+        const bool flagsChanged = SUCCEEDED(stateHr) &&
+                                  (!lastForceFeedbackStateFlags_ || *lastForceFeedbackStateFlags_ != forceFeedbackState);
+        if (FAILED(stateHr) && resultChanged) {
+            diagnostics_(LogLevel::Warning,
+                         "GetForceFeedbackState failed: " + FormatHresult(stateHr));
+        } else if (SUCCEEDED(stateHr) && (resultChanged || flagsChanged)) {
+            diagnostics_(LogLevel::Info,
+                         "GetForceFeedbackState: " + FormatForceFeedbackState(forceFeedbackState));
+        }
+        lastForceFeedbackStateQueryResult_ = stateHr;
+        if (SUCCEEDED(stateHr)) {
+            lastForceFeedbackStateFlags_ = forceFeedbackState;
+            exclusiveForceFeedbackAccessFailure_.reset();
+        } else {
+            lastForceFeedbackStateFlags_.reset();
+            exclusiveForceFeedbackAccessFailure_ = stateHr;
+        }
+    }
+
     ApplyRawState(raw);
     state_.connected = true;
 
@@ -354,13 +417,21 @@ rvwheel::dal::Status DirectInputDevice::PollRawAxes(rvwheel::dal::RawAxisSnapsho
 }
 
 Status DirectInputDevice::ApplyConstantForce(float normalizedForce) noexcept {
-    const float clamped = std::clamp(normalizedForce, -1.0f, 1.0f);
+    const float clamped = FiniteClamp(normalizedForce, -1.0f, 1.0f);
+    if (constantForceEffect_ && constantForceStorage_.lastAppliedNormalized == clamped) {
+        return Status::Ok();
+    }
 
-    DICONSTANTFORCE cf{};
-    cf.lMagnitude = static_cast<LONG>(clamped * static_cast<float>(kDIForceScale));
+    const DWORD axisOffset = SteeringAxisObjectOffset();
+    if (constantForceEffect_ && constantForceStorage_.axis[0] != axisOffset) {
+        return Status::BackendError("Cannot change constant-force axis while the effect is active; stop it first");
+    }
 
-    DWORD axes[1] = {SteeringAxisObjectOffset()};
-    LONG direction[1] = {0};
+    const DICONSTANTFORCE previousParameters = constantForceStorage_.parameters;
+    constantForceStorage_.parameters.lMagnitude =
+        static_cast<LONG>(clamped * static_cast<float>(kDIForceScale));
+    constantForceStorage_.axis[0] = axisOffset;
+    constantForceStorage_.direction[0] = 0;
 
     DIEFFECT eff{};
     eff.dwSize = sizeof(DIEFFECT);
@@ -371,51 +442,68 @@ Status DirectInputDevice::ApplyConstantForce(float normalizedForce) noexcept {
     eff.dwTriggerButton = DIEB_NOTRIGGER;
     eff.dwTriggerRepeatInterval = 0;
     eff.cAxes = 1;
-    eff.rgdwAxes = axes;
-    eff.rglDirection = direction;
+    eff.rgdwAxes = constantForceStorage_.axis;
+    eff.rglDirection = constantForceStorage_.direction;
     eff.lpEnvelope = nullptr;
     eff.cbTypeSpecificParams = sizeof(DICONSTANTFORCE);
-    eff.lpvTypeSpecificParams = &cf;
+    eff.lpvTypeSpecificParams = &constantForceStorage_.parameters;
     eff.dwStartDelay = 0;
 
     if (!constantForceEffect_) {
         const HRESULT hr = device_->CreateEffect(GUID_ConstantForce, &eff, &constantForceEffect_, nullptr);
         if (FAILED(hr)) {
             constantForceEffect_.Reset();
+            constantForceStorage_.parameters = previousParameters;
             return IsUnsupportedEffectError(hr)
                        ? Status::NotSupported("Constant force not supported by this device")
                        : Status::BackendError("CreateEffect(GUID_ConstantForce) failed: " + FormatHresult(hr));
         }
         const HRESULT startHr = constantForceEffect_->Start(1, 0);
-        return FAILED(startHr) ? Status::BackendError("Failed to start constant force effect: " + FormatHresult(startHr))
-                                : Status::Ok();
+        if (FAILED(startHr)) {
+            constantForceEffect_.Reset();
+            constantForceStorage_.parameters = previousParameters;
+            return Status::BackendError("Failed to start constant force effect: " + FormatHresult(startHr));
+        }
+        constantForceStorage_.lastAppliedNormalized = clamped;
+        return Status::Ok();
     }
 
-    const HRESULT hr = constantForceEffect_->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_START);
-    return FAILED(hr) ? Status::BackendError("Failed to update constant force effect: " + FormatHresult(hr)) : Status::Ok();
+    const HRESULT hr = constantForceEffect_->SetParameters(&eff, kEffectParameterUpdateFlags);
+    if (FAILED(hr)) {
+        constantForceStorage_.parameters = previousParameters;
+        return Status::BackendError("Failed to update constant force effect: " + FormatHresult(hr));
+    }
+    constantForceStorage_.lastAppliedNormalized = clamped;
+    return Status::Ok();
 }
 
 namespace {
 
 Status ApplyConditionEffect(Microsoft::WRL::ComPtr<IDirectInputEffect>& effect,
+                             ConditionEffectStorage& storage,
                              IDirectInputDevice8A* device,
                              REFGUID effectType,
                              DWORD axisOffset,
                              float normalizedStrength,
                              const char* label) noexcept {
-    const float clamped = std::clamp(normalizedStrength, 0.0f, 1.0f);
+    const float clamped = FiniteClamp(normalizedStrength, 0.0f, 1.0f);
+    if (effect && storage.lastAppliedNormalized == clamped) {
+        return Status::Ok();
+    }
+    if (effect && storage.axis[0] != axisOffset) {
+        return Status::BackendError(std::string("Cannot change axis for ") + label + " while it is active; stop it first");
+    }
     const LONG coefficient = static_cast<LONG>(clamped * static_cast<float>(kDIForceScale));
 
-    DICONDITION condition{};
-    condition.lOffset = 0;
-    condition.lPositiveCoefficient = coefficient;
-    condition.lNegativeCoefficient = coefficient;
-    condition.dwPositiveSaturation = static_cast<DWORD>(kDIForceScale);
-    condition.dwNegativeSaturation = static_cast<DWORD>(kDIForceScale);
-    condition.lDeadBand = 0;
-
-    DWORD axes[1] = {axisOffset};
-    LONG direction[1] = {0};
+    const DICONDITION previousParameters = storage.parameters;
+    storage.parameters.lOffset = 0;
+    storage.parameters.lPositiveCoefficient = coefficient;
+    storage.parameters.lNegativeCoefficient = coefficient;
+    storage.parameters.dwPositiveSaturation = static_cast<DWORD>(kDIForceScale);
+    storage.parameters.dwNegativeSaturation = static_cast<DWORD>(kDIForceScale);
+    storage.parameters.lDeadBand = 0;
+    storage.axis[0] = axisOffset;
+    storage.direction[0] = 0;
 
     DIEFFECT eff{};
     eff.dwSize = sizeof(DIEFFECT);
@@ -426,42 +514,58 @@ Status ApplyConditionEffect(Microsoft::WRL::ComPtr<IDirectInputEffect>& effect,
     eff.dwTriggerButton = DIEB_NOTRIGGER;
     eff.dwTriggerRepeatInterval = 0;
     eff.cAxes = 1;
-    eff.rgdwAxes = axes;
-    eff.rglDirection = direction;
+    eff.rgdwAxes = storage.axis;
+    eff.rglDirection = storage.direction;
     eff.lpEnvelope = nullptr;
     eff.cbTypeSpecificParams = sizeof(DICONDITION);
-    eff.lpvTypeSpecificParams = &condition;
+    eff.lpvTypeSpecificParams = &storage.parameters;
     eff.dwStartDelay = 0;
 
     if (!effect) {
         const HRESULT hr = device->CreateEffect(effectType, &eff, &effect, nullptr);
         if (FAILED(hr)) {
             effect.Reset();
+            storage.parameters = previousParameters;
             return IsUnsupportedEffectError(hr)
                        ? Status::NotSupported(std::string(label) + " not supported by this device")
                        : Status::BackendError(std::string("CreateEffect failed for ") + label + ": " + FormatHresult(hr));
         }
         const HRESULT startHr = effect->Start(1, 0);
-        return FAILED(startHr) ? Status::BackendError(std::string("Failed to start ") + label + ": " + FormatHresult(startHr))
-                                : Status::Ok();
+        if (FAILED(startHr)) {
+            effect.Reset();
+            storage.parameters = previousParameters;
+            return Status::BackendError(std::string("Failed to start ") + label + ": " + FormatHresult(startHr));
+        }
+        storage.lastAppliedNormalized = clamped;
+        return Status::Ok();
     }
 
-    const HRESULT hr = effect->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_START);
-    return FAILED(hr) ? Status::BackendError(std::string("Failed to update ") + label + ": " + FormatHresult(hr)) : Status::Ok();
+    const HRESULT hr = effect->SetParameters(&eff, kEffectParameterUpdateFlags);
+    if (FAILED(hr)) {
+        storage.parameters = previousParameters;
+        return Status::BackendError(std::string("Failed to update ") + label + ": " + FormatHresult(hr));
+    }
+    storage.lastAppliedNormalized = clamped;
+    return Status::Ok();
 }
 
 } // namespace
 
 Status DirectInputDevice::ApplySpring(float normalizedStrength) noexcept {
-    return ApplyConditionEffect(springEffect_, device_.Get(), GUID_Spring, SteeringAxisObjectOffset(), normalizedStrength, "spring effect");
+    return ApplyConditionEffect(springEffect_, springStorage_, device_.Get(), GUID_Spring, SteeringAxisObjectOffset(),
+                                normalizedStrength, "spring effect");
 }
 
 Status DirectInputDevice::ApplyDamper(float normalizedStrength) noexcept {
-    return ApplyConditionEffect(damperEffect_, device_.Get(), GUID_Damper, SteeringAxisObjectOffset(), normalizedStrength, "damper effect");
+    return ApplyConditionEffect(damperEffect_, damperStorage_, device_.Get(), GUID_Damper, SteeringAxisObjectOffset(),
+                                normalizedStrength, "damper effect");
 }
 
 Status DirectInputDevice::ApplyGain(float normalizedGain) noexcept {
-    const float clamped = std::clamp(normalizedGain, 0.0f, 1.0f);
+    const float clamped = FiniteClamp(normalizedGain, 0.0f, 1.0f);
+    if (lastAppliedGain_ == clamped) {
+        return Status::Ok();
+    }
 
     DIPROPDWORD prop{};
     prop.diph.dwSize = sizeof(DIPROPDWORD);
@@ -471,7 +575,11 @@ Status DirectInputDevice::ApplyGain(float normalizedGain) noexcept {
     prop.dwData = static_cast<DWORD>(clamped * static_cast<float>(kDIForceScale));
 
     const HRESULT hr = device_->SetProperty(DIPROP_FFGAIN, &prop.diph);
-    return FAILED(hr) ? Status::BackendError("Failed to set global force feedback gain: " + FormatHresult(hr)) : Status::Ok();
+    if (FAILED(hr)) {
+        return Status::BackendError("Failed to set global force feedback gain: " + FormatHresult(hr));
+    }
+    lastAppliedGain_ = clamped;
+    return Status::Ok();
 }
 
 Status DirectInputDevice::ApplyForceFeedback(const rvwheel::dal::ForceFeedbackCommand& command) noexcept {
@@ -480,6 +588,10 @@ Status DirectInputDevice::ApplyForceFeedback(const rvwheel::dal::ForceFeedbackCo
     }
     if (!info_.capabilities.hasForceFeedback) {
         return Status::NotSupported("Device has no force feedback capability");
+    }
+    if (exclusiveForceFeedbackAccessFailure_) {
+        return Status::BackendError("Exclusive force-feedback state is unavailable: " +
+                                    FormatHresult(*exclusiveForceFeedbackAccessFailure_));
     }
 
     // Only touch an effect channel that either already exists (so it can be
@@ -538,12 +650,28 @@ Status DirectInputDevice::StopForceFeedback() noexcept {
         }
     }
 
+    // A stopped effect must be started afresh on the next activation.
+    // Releasing it here makes that lifecycle explicit and invalidates the
+    // cached values that would otherwise suppress the required restart.
+    constantForceEffect_.Reset();
+    springEffect_.Reset();
+    damperEffect_.Reset();
+    constantForceStorage_.lastAppliedNormalized.reset();
+    springStorage_.lastAppliedNormalized.reset();
+    damperStorage_.lastAppliedNormalized.reset();
+
     // Device-wide safety net beyond the effects this instance tracks; see
-    // the destructor's comment. Deliberately not folded into `failures`:
-    // DIERR_NOTEXCLUSIVEACQUIRED here is an expected, harmless outcome
-    // whenever RVWheel is (as by default) running with nonexclusive input
-    // access, not a real force-feedback failure.
-    device_->SendForceFeedbackCommand(DISFFC_STOPALL);
+    // the destructor's comment. A failure stays harmless/ignored for the
+    // default nonexclusive input path. For an explicit exclusive FFB owner
+    // it is evidence that exclusivity or the device was lost, so surface it
+    // to the diagnostic rather than reporting a false-positive stop.
+    const HRESULT stopAllHr = device_->SendForceFeedbackCommand(DISFFC_STOPALL);
+    if (exclusiveForceFeedbackAccessRequested_ && FAILED(stopAllHr)) {
+        if (!failures.empty()) {
+            failures += "; ";
+        }
+        failures += "device-wide STOPALL: " + FormatHresult(stopAllHr);
+    }
 
     return failures.empty() ? Status::Ok() : Status::BackendError("Failed to stop: " + failures);
 }

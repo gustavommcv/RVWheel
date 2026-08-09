@@ -247,6 +247,123 @@ Strategy A is rejected outright per §2 — not a close call.
    definitive answer here — but the question is left open for anyone tuning
    that behavior later.
 
+### Cooperative-level investigation update (implementation prepared, hardware result pending)
+
+The official `IDirectInputDevice8::SetCooperativeLevel` documentation adds
+two constraints directly relevant to the reproducible two-second failure:
+
+- its `HWND` must be a valid top-level window owned by the calling process;
+- a `DISCL_FOREGROUND` device is automatically unacquired when that window
+  moves to the background;
+- an application using `DISCL_EXCLUSIVE | DISCL_BACKGROUND` is explicitly
+  **not guaranteed to retain access** if another application requests
+  exclusive access; the documented recovery is to unacquire and acquire
+  again.
+
+Sources: [SetCooperativeLevel](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee417921(v=vs.85))
+and [Acquiring Devices](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee415221(v=vs.85)).
+
+This strengthens the interpretation that the existing background-exclusive
+path can legitimately be displaced, but it does **not** identify which
+process/driver/firmware behavior does so on the G923 and therefore is not a
+root-cause claim.
+
+The code now models `Background` versus `Foreground` as an explicit policy.
+The ordinary input path still resolves unconditionally to
+`DISCL_NONEXCLUSIVE | DISCL_BACKGROUND`; only explicit real-FFB diagnostic
+modes can select foreground. The enumerator now logs the exact cooperative
+level and HRESULT from both `SetCooperativeLevel` and the initial `Acquire()`.
+
+The first experiment uses a process-owned top-level window that is
+deliberately invisible and unfocused, and creates no effect. This is more
+precise than reusing the normal `HWND_MESSAGE` window: message-only windows
+do not satisfy the documented top-level-window contract, so a failure with
+one would conflate an invalid HWND shape with foreground-priority behavior.
+The first hardware experiment is now complete: with the valid top-level
+window deliberately unfocused, initial acquisition and all retries failed
+immediately with `0x80070005 = DIERR_OTHERAPPHASPRIO`; no effect was created
+or started, the process exited `1`, and the operator confirmed no apparent
+physical change. This **confirms the focus prerequisite** on the real G923
+but leaves the larger `DISCL_FOREGROUND` hypothesis **inconclusive** until a
+focused top-level window is tested. A dedicated visible tool-window mode is
+implemented for that next stop-only experiment and refuses to initialize
+DirectInput unless `GetForegroundWindow()` confirms ownership. It has not
+yet been run. Exact commands and observations are in
+[FORCE_FEEDBACK_HARDWARE_TEST.md](../FORCE_FEEDBACK_HARDWARE_TEST.md).
+
+The focused follow-up has now also run: Windows confirmed the dedicated
+tool window as foreground, initial `Acquire()` succeeded under
+`DISCL_EXCLUSIVE | DISCL_FOREGROUND`, input remained readable, the stop-only
+path returned `Ok`, and the operator reported no behavior beyond the G923's
+pre-existing idle autocenter. This **confirms foreground acquisition is
+viable** on the device. It still does not answer retention: the run lasted
+roughly 200 ms, well below the prior ~2-second failure point. A no-effect
+five-second retention probe is the next lowest-risk experiment.
+
+That retention probe has now passed: `EXCLUSIVE | FOREGROUND` remained
+acquired for 5.01 seconds with the HWND continuously confirmed foreground,
+245/245 input polls readable, successful `GetForceFeedbackState` reads
+(`ACTUATORSOFF | EMPTY | POWERON`), and successful device-wide STOPALL at
+the end. The operator reported no physical change beyond the wheel's
+pre-existing idle autocenter. This is **strong evidence that foreground
+ownership prevents the timed exclusive-access loss in the no-effect case**.
+It is not yet a confirmed fix for the original effect-update failure,
+because no effect was created or updated in this probe.
+
+The separately authorized focused weak-spring follow-up has now falsified
+that candidate fix for the real failure. Effect creation/start succeeded, but
+at approximately 2.0 seconds the controller faulted and spring
+`SetParameters` returned `0x80040205 = DIERR_NOTEXCLUSIVEACQUIRED`, matching
+the background-exclusive runs. Therefore focus/cooperative level explains the
+idle acquisition behavior but **does not explain or fix the effect-active
+failure**. The remaining investigation must isolate behavior specific to the
+active effect/update path (including redundant parameter restarts, device-wide
+gain writes, autocenter ownership, or driver/firmware behavior); it must not
+claim foreground mode as a production solution.
+
+The immediate code review then confirmed two active-effect-path violations of
+Microsoft's documented contract. First, type-specific effect buffers were
+function locals even though DirectInput requires them to remain valid for the
+effect lifetime. Second, updates passed `DIEP_START` on every tick, explicitly
+restarting the effect, rather than sending the minimal
+`DIEP_TYPESPECIFICPARAMS` update used by Microsoft's own example. The backend
+now owns persistent buffers, does not explicitly restart updates, and skips
+unchanged gain/effect values. These are generic DirectInput fixes, not a G923
+special case. Hardware validation remains pending, so neither defect is yet
+claimed as the root cause of the two-second loss.
+
+A subsequent instrumented run exposed the actual ownership transition. The
+effect stayed logically active for five seconds, but the process logged a
+second successful exclusive Acquire. The weak-effect loop was calling
+`DeviceManager::RefreshIfDue()`; discovery creates/acquires a candidate before
+the manager compares its `DeviceId` with the preserved instance. Because the
+first acquisition occurs before a three-second countdown and the refresh
+interval is five seconds, the duplicate acquired the wheel almost exactly two
+seconds after effect activation. It thereby revoked the original instance's
+exclusive FFB ownership; final STOPALL returned
+`DIERR_NOTEXCLUSIVEACQUIRED`. This accounts for the repeatable timing without a
+firmware-watchdog theory.
+
+The operator also felt resistance decrease below the normal G923 baseline and
+then quickly return. This corroborates both halves of the trace: device-wide
+gain reached the motor, and the duplicate acquisition ended that altered state
+near the refresh boundary.
+
+The diagnostic now prohibits periodic rediscovery during an exclusive effect
+session, while retaining per-frame polling for disconnect detection. Production
+integration must model the same invariant (stop/release the exclusive owner
+before a hotplug rescan). Hardware confirmation of the corrected ownership
+lifecycle is still pending.
+
+The first separately authorized G923 validation run after that change passed
+technically: one exclusive Acquire, five full seconds `Active`, readable input,
+foreground retained, successful final STOPALL, and no exclusive-access error.
+The operator confirmed the resistance remained altered for the session and
+returned to the normal baseline after stopping, with no residual abnormal
+force. This strongly confirms the duplicate refresh acquisition as the cause.
+Per the hardware procedure, one successful run is evidence but not yet
+sufficient for final validation; consecutive runs remain pending.
+
 ## Update — first real hardware test (2026-08-09)
 
 Step 4 of [FORCE_FEEDBACK_HARDWARE_TEST.md](../FORCE_FEEDBACK_HARDWARE_TEST.md)
@@ -264,17 +381,21 @@ new open question:
    partway through, at a similar elapsed time in both runs, independent of
    the unrequested-extra-effects bug (which was already fixed for the
    second run, ruling out hypothesis (c) below). **What remains open is
-   *why* the acquisition is downgraded -- and Logitech G HUB, the leading
-   hypothesis, has since been ruled out**: a third run with
+   *why* the acquisition is downgraded -- and Logitech G HUB plus foreground
+   cooperative mode, two leading hypotheses, have since been ruled out**:
+   a focused foreground run retained idle exclusivity for five seconds but
+   lost it at ~2 seconds as soon as a weak spring was actively updated; and
+   a run with
    `lghub_agent.exe`/`lghub_system_tray.exe` terminated reproduced the
-   identical failure at the identical elapsed time. Remaining candidates,
-   none confirmed: (a) `DirectInputDevice::Poll()`'s own
-   reacquire-on-input-loss path; (b) a Windows/driver-level timeout on held
-   exclusive FFB access without periodic confirmation; (c)
-   `lghub_updater.exe` (a background updater that could not be terminated)
-   or another process. Diagnosing further needs instrumentation (e.g.
-   logging exactly when `Poll()`'s reacquire path fires) rather than
-   another plain manual run.
+   identical failure at the identical elapsed time. Instrumentation also
+   ruled out `DirectInputDevice::Poll()`'s reacquire path: input never lost
+   acquisition before the effect call failed. Remaining candidates, none
+   confirmed, include the two application-side defects now corrected
+   (dangling type-specific parameter buffers and explicit restart/redundant
+   updates), autocenter ownership, a driver/firmware timeout, or another
+   process such as `lghub_updater.exe`. The hardware impact of the code fixes
+   remains untested. The next instrumented run must report foreground
+   retention and input-poll status separately from the effect failure.
 
 ## Risks carried forward into implementation
 

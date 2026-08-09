@@ -25,6 +25,7 @@
 | DirectInput effect creation/update/stop (`CreateEffect`, `SetParameters`, `Stop`, `SendForceFeedbackCommand`) | Implemented; a real spring effect ran correctly for ~2s, then `SetParameters`/`Stop` reproducibly fail with `DIERR_NOTEXCLUSIVEACQUIRED` in all 3 runs, G HUB ruled out as the cause (see Incident log) |
 | Capability detection (`DIDC_FORCEFEEDBACK`) | Implemented and confirmed working against a real G923 (read-only) |
 | Exclusive FFB acquisition | Confirmed working on a real G923 without breaking input polling (hardware test Step 4) |
+| `DISCL_EXCLUSIVE | DISCL_FOREGROUND` investigation | Unfocused test confirmed `DIERR_OTHERAPPHASPRIO`; focused no-effect retention passed for 5.01s/245 polls with successful state reads and STOPALL; real-effect confirmation remains pending |
 | Safety controller (clamps, watchdog, slew rate, fault handling) | Implemented, unit-tested (37+ tests); a real gain-ramp overshoot bug was found and fixed after the first real activation |
 | Profile-configured spring/damper source | Implemented, unit-tested; ran briefly on real hardware, see Incident log |
 | Telemetry-derived self-aligning torque | **Not implemented** — see [Limitations](#limitations) |
@@ -201,6 +202,8 @@ hardware-validated" status.
 ```powershell
 rvwheel_device_probe.exe --list           # Prints hasForceFeedback per device (read-only, always safe).
 rvwheel_device_probe.exe --ffb-simulate [--duration <s>] [--rate <hz>] [--profile <id-or-path>]
+rvwheel_device_probe.exe --ffb-hw-test-stop-only --ffb-cooperative-level foreground
+rvwheel_device_probe.exe --ffb-hw-test-stop-only --ffb-cooperative-level foreground-focused
 ```
 
 `--ffb-simulate` resolves the device's profile (or a conservative built-in
@@ -211,6 +214,14 @@ all against an in-process recording sink, never the real device. See
 `SimulatedForceFeedbackSink` in
 [`DeviceProbeApp.cpp`](../tools/device_probe/DeviceProbeApp.cpp) for the
 structural (not just behavioral) guarantee behind that claim.
+
+The final command is a gated real-hardware diagnostic, not a simulation.
+It creates no effect and starts no force, but it does request exclusive
+DirectInput access and calls the real stop path once. Its foreground mode
+uses a valid process-owned top-level window that is deliberately invisible
+and unfocused for the first experiment. Run it only with explicit operator
+authorization and the procedure in
+[FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md).
 
 ## How to disable force feedback entirely
 
@@ -242,6 +253,10 @@ regardless of profile content.
   producer yet.
 - Nothing in the launcher or bridge calls `ForceFeedbackEngine::Enable()`;
   the engine is currently only reachable via `--ffb-simulate`.
-- Force feedback has never been applied to real hardware by this project.
+- Real weak spring/damper diagnostics have been applied to one G923 under
+  explicit per-run authorization. They reproducibly lose exclusive DirectInput
+  FFB access at approximately two seconds and therefore have **not passed
+  validation**; see the hardware test incident log. No production/gameplay FFB
+  path is enabled.
 - Only DirectInput's condition/constant-force effect types are wired;
   periodic effects (sine, square, etc.) and envelopes are not implemented.

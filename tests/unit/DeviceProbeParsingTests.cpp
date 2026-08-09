@@ -6,6 +6,7 @@
 using rvwheel::tools::probe::CliParser;
 using rvwheel::tools::probe::DeviceSelectionOutcome;
 using rvwheel::tools::probe::FfbTestEffect;
+using rvwheel::tools::probe::FfbTestCooperativeLevel;
 using rvwheel::tools::probe::ProbeMode;
 using rvwheel::tools::probe::SelectDeviceForMonitoring;
 
@@ -79,6 +80,33 @@ TEST_CASE("CliParser: --ffb-hw-test-stop-only parses alone with no extra options
     const auto result = CliParser::Parse({L"--ffb-hw-test-stop-only"});
     REQUIRE(result.success);
     REQUIRE(result.options.mode == ProbeMode::FfbHardwareTestStopOnly);
+    REQUIRE(result.options.ffbTestCooperativeLevel == FfbTestCooperativeLevel::Background);
+}
+
+TEST_CASE("CliParser: real FFB tests accept an explicit cooperative level",
+          "[DeviceProbe][CliParser][FfbHardwareTest]") {
+    const auto foreground =
+        CliParser::Parse({L"--ffb-hw-test-stop-only", L"--ffb-cooperative-level", L"foreground"});
+    REQUIRE(foreground.success);
+    REQUIRE(foreground.options.ffbTestCooperativeLevel == FfbTestCooperativeLevel::ForegroundUnfocused);
+
+    const auto focused =
+        CliParser::Parse({L"--ffb-hw-test-stop-only", L"--ffb-cooperative-level", L"foreground-focused"});
+    REQUIRE(focused.success);
+    REQUIRE(focused.options.ffbTestCooperativeLevel == FfbTestCooperativeLevel::ForegroundFocused);
+
+    const auto background = CliParser::Parse(
+        {L"--ffb-hw-test-weak-effect", L"--effect", L"spring", L"--ffb-cooperative-level", L"background"});
+    REQUIRE(background.success);
+    REQUIRE(background.options.ffbTestCooperativeLevel == FfbTestCooperativeLevel::Background);
+}
+
+TEST_CASE("CliParser: cooperative level is hardware-test-only and rejects unknown values",
+          "[DeviceProbe][CliParser][FfbHardwareTest][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--list", L"--ffb-cooperative-level", L"foreground"}).success);
+    REQUIRE_FALSE(
+        CliParser::Parse({L"--ffb-hw-test-stop-only", L"--ffb-cooperative-level", L"nonsense"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-stop-only", L"--ffb-cooperative-level"}).success);
 }
 
 TEST_CASE("CliParser: --ffb-hw-test-stop-only rejects duration/rate/profile/parent-pid",

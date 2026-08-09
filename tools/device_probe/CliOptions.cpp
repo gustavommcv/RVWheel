@@ -63,7 +63,9 @@ std::string CliParser::UsageText() {
            "  rvwheel_device_probe --bridge [--rate <hz>] [--profile <id-or-path>]\n"
            "  rvwheel_device_probe --ffb-simulate [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
            "  rvwheel_device_probe --ffb-hw-test-stop-only\n"
+           "                              [--ffb-cooperative-level background|foreground|foreground-focused]\n"
            "  rvwheel_device_probe --ffb-hw-test-weak-effect [--effect spring|damper]\n"
+           "                              [--ffb-cooperative-level background|foreground|foreground-focused]\n"
            "\n"
            "Options:\n"
            "  --duration <seconds>   How long --monitor/--capture/--ffb-simulate run. Range [1, 3600], default 30.\n"
@@ -79,6 +81,10 @@ std::string CliParser::UsageText() {
            "  --effect spring|damper Which single condition effect --ffb-hw-test-weak-effect exercises.\n"
            "                         Default spring. Gain/strength/duration are fixed, conservative constants\n"
            "                         for this mode and are not configurable.\n"
+           "  --ffb-cooperative-level background|foreground|foreground-focused\n"
+           "                         Hardware-test-only DirectInput exclusive access policy. Default background\n"
+           "                         preserves prior behavior. Foreground uses a top-level but invisible/unfocused\n"
+           "                         diagnostic window; foreground-focused shows and activates a small tool window.\n"
            "\n"
            "Notes:\n"
            "  - Hardware is re-enumerated at most once every 5 seconds; not configurable here.\n"
@@ -90,7 +96,7 @@ std::string CliParser::UsageText() {
            "    the first FFB-capable device and calls the real StopForceFeedback() exactly once. It never\n"
            "    creates or starts an effect. Only run this as part of the gated procedure in\n"
            "    docs/FORCE_FEEDBACK_HARDWARE_TEST.md, with the wheel secured and someone watching.\n"
-           "  - --ffb-hw-test-weak-effect is a REAL hardware test: it applies ONE real, weak (gain 0.1) effect\n"
+           "  - --ffb-hw-test-weak-effect is a REAL hardware test: it applies ONE real, weak (gain 0.2) effect\n"
            "    for a fixed 5 seconds via the real ForceFeedbackSafetyController, then stops. Only run this\n"
            "    after --ffb-hw-test-stop-only has passed, per docs/FORCE_FEEDBACK_HARDWARE_TEST.md.\n"
            "  - --bridge runs until Ctrl+C and publishes the latest safe input snapshot under LOCALAPPDATA.\n"
@@ -112,10 +118,12 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     bool profileSet = false;
     bool parentPidSet = false;
     bool effectSet = false;
+    bool ffbCooperativeLevelSet = false;
     long long durationSeconds = kDefaultDurationSeconds;
     long long rateHz = kDefaultRateHz;
     long long parentProcessId = 0;
     FfbTestEffect effect = FfbTestEffect::Spring;
+    FfbTestCooperativeLevel ffbCooperativeLevel = FfbTestCooperativeLevel::Background;
     std::filesystem::path capturePath;
     std::filesystem::path calibrateOutputPath;
     std::filesystem::path profilesDirOverride;
@@ -192,6 +200,21 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
             } else {
                 return Fail("--effect must be \"spring\" or \"damper\".");
             }
+        } else if (arg == L"--ffb-cooperative-level") {
+            if (i + 1 >= args.size()) {
+                return Fail("--ffb-cooperative-level requires \"background\", \"foreground\", or \"foreground-focused\".");
+            }
+            const std::wstring& value = args[++i];
+            if (value == L"background") {
+                ffbCooperativeLevel = FfbTestCooperativeLevel::Background;
+            } else if (value == L"foreground") {
+                ffbCooperativeLevel = FfbTestCooperativeLevel::ForegroundUnfocused;
+            } else if (value == L"foreground-focused") {
+                ffbCooperativeLevel = FfbTestCooperativeLevel::ForegroundFocused;
+            } else {
+                return Fail("--ffb-cooperative-level must be \"background\", \"foreground\", or \"foreground-focused\".");
+            }
+            ffbCooperativeLevelSet = true;
         } else if (arg == L"--capture") {
             if (modeSet) {
                 return Fail(kConflictingModeMessage);
@@ -301,6 +324,10 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     if (effectSet && result.options.mode != ProbeMode::FfbHardwareTestWeakEffect) {
         return Fail("--effect only applies to --ffb-hw-test-weak-effect.");
     }
+    if (ffbCooperativeLevelSet && result.options.mode != ProbeMode::FfbHardwareTestStopOnly &&
+        result.options.mode != ProbeMode::FfbHardwareTestWeakEffect) {
+        return Fail("--ffb-cooperative-level only applies to real FFB hardware-test modes.");
+    }
 
     result.options.duration = std::chrono::seconds{durationSeconds};
     result.options.rateHz = static_cast<int>(rateHz);
@@ -310,6 +337,7 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     result.options.profilesDirOverride = std::move(profilesDirOverride);
     result.options.profileSelector = std::move(profileSelector);
     result.options.ffbTestEffect = effect;
+    result.options.ffbTestCooperativeLevel = ffbCooperativeLevel;
     result.success = true;
     return result;
 }

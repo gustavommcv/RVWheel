@@ -30,6 +30,12 @@ enum class FfbTestEffect {
     Damper,
 };
 
+enum class FfbTestCooperativeLevel {
+    Background,
+    ForegroundUnfocused,
+    ForegroundFocused,
+};
+
 struct CliOptions {
     ProbeMode mode = ProbeMode::Help;
     std::chrono::seconds duration{30};
@@ -64,6 +70,11 @@ struct CliOptions {
     // this mode -- see DeviceProbeApp::RunFfbHardwareTestWeakEffect -- so
     // this field only ever selects which single effect type is exercised.
     FfbTestEffect ffbTestEffect = FfbTestEffect::Spring;
+
+    // Hardware-test-only DirectInput acquisition policy. Foreground uses a
+    // valid top-level but deliberately invisible/unfocused window in the
+    // first experiment; it still never creates an effect in stop-only mode.
+    FfbTestCooperativeLevel ffbTestCooperativeLevel = FfbTestCooperativeLevel::Background;
 };
 
 struct CliParseResult {

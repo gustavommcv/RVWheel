@@ -307,6 +307,25 @@ TEST_CASE("ForceFeedbackSafetyController: any fault or watchdog timeout eventual
     }
 }
 
+TEST_CASE("ForceFeedbackSafetyController: repeated backend failures while Faulted do not spam stop edges",
+          "[FFB][Safety][Fault]") {
+    ForceFeedbackSafetyController controller(EnabledConfig());
+    controller.Enable();
+    (void)controller.Update(ForceFeedbackCommand{0.5f, 0, 0, 1.0f}, T(0), T(0));
+    (void)controller.Update(ForceFeedbackCommand{0.5f, 0, 0, 1.0f}, T(20), T(20));
+
+    controller.ReportBackendFailure("first failure");
+    const ForceFeedbackDecision stop = controller.Tick(T(21));
+    REQUIRE(stop.stopDevice);
+    REQUIRE(controller.State() == ForceFeedbackState::Faulted);
+
+    controller.ReportBackendFailure("secondary stop failure");
+    const ForceFeedbackDecision idle = controller.Tick(T(22));
+    REQUIRE_FALSE(idle.applyCommand);
+    REQUIRE_FALSE(idle.stopDevice);
+    REQUIRE(controller.Diagnostics(T(22)).lastFaultReason == "first failure");
+}
+
 TEST_CASE("ForceFeedbackSafetyController: stale telemetry timestamp is treated as no update at all",
           "[FFB][Safety][Watchdog]") {
     ForceFeedbackConfig config = EnabledConfig();
