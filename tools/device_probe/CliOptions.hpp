@@ -16,6 +16,7 @@ enum class ProbeMode {
     Bridge,
     Profiles,
     Calibrate,
+    FfbSimulate,
 };
 
 struct CliOptions {

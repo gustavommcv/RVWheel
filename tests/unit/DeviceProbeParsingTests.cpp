@@ -47,6 +47,33 @@ TEST_CASE("CliParser: --bridge rejects duration", "[DeviceProbe][CliParser][Brid
     REQUIRE_FALSE(CliParser::Parse({L"--bridge", L"--duration", L"10"}).success);
 }
 
+TEST_CASE("CliParser: --ffb-simulate accepts duration/rate/profile like --monitor", "[DeviceProbe][CliParser][FfbSimulate]") {
+    const auto result =
+        CliParser::Parse({L"--ffb-simulate", L"--duration", L"5", L"--rate", L"60", L"--profile", L"wheel-profile"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::FfbSimulate);
+    REQUIRE(result.options.duration == std::chrono::seconds{5});
+    REQUIRE(result.options.rateHz == 60);
+    REQUIRE(result.options.profileSelector == L"wheel-profile");
+}
+
+TEST_CASE("CliParser: --ffb-simulate with no options uses documented defaults", "[DeviceProbe][CliParser][FfbSimulate]") {
+    const auto result = CliParser::Parse({L"--ffb-simulate"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::FfbSimulate);
+    REQUIRE(result.options.duration == std::chrono::seconds{CliParser::kDefaultDurationSeconds});
+    REQUIRE(result.options.rateHz == CliParser::kDefaultRateHz);
+}
+
+TEST_CASE("CliParser: --ffb-simulate conflicts with other modes", "[DeviceProbe][CliParser][FfbSimulate][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-simulate", L"--bridge"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--list", L"--ffb-simulate"}).success);
+}
+
+TEST_CASE("CliParser: --parent-pid does not apply to --ffb-simulate", "[DeviceProbe][CliParser][FfbSimulate][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-simulate", L"--parent-pid", L"123"}).success);
+}
+
 TEST_CASE("CliParser: --bridge accepts a launcher parent process", "[DeviceProbe][CliParser][Bridge]") {
     const auto result = CliParser::Parse({L"--bridge", L"--parent-pid", L"4242"});
     REQUIRE(result.success);

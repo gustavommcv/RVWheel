@@ -30,6 +30,8 @@
 
 #include "rvwheel/dal/DeviceManagerFactory.hpp"
 #include "rvwheel/dal/ICalibratableWheelDevice.hpp"
+#include "rvwheel/ffb/ForceFeedbackEngine.hpp"
+#include "rvwheel/ffb/SpringDamperSource.hpp"
 #include "rvwheel/profiles/ProfileLoader.hpp"
 #include "rvwheel/profiles/ProfileRepository.hpp"
 #include "rvwheel/profiles/ProfileResolver.hpp"
@@ -54,6 +56,43 @@ using rvwheel::profiles::ProfileOrigin;
 using rvwheel::profiles::ProfileRepository;
 using rvwheel::profiles::ProfileResolver;
 using rvwheel::profiles::ProfileWithOrigin;
+
+// The structural guarantee behind --ffb-simulate: this class implements
+// IWheelDevice by forwarding every read-only/layout method to a real
+// device, but ApplyForceFeedback/StopForceFeedback are intercepted here and
+// never call through to `real_`. The force feedback engine only ever talks
+// to whatever IWheelDevice reference it is given -- by giving it this sink
+// instead of the real device, "never sends a real force" is true by
+// construction, not by a runtime flag that could be forgotten or bypassed.
+class SimulatedForceFeedbackSink final : public IWheelDevice {
+public:
+    explicit SimulatedForceFeedbackSink(IWheelDevice& real) : real_(real) {}
+
+    [[nodiscard]] const rvwheel::dal::DeviceInfo& Info() const noexcept override { return real_.Info(); }
+    [[nodiscard]] bool IsConnected() const noexcept override { return real_.IsConnected(); }
+    Status Poll() noexcept override { return real_.Poll(); }
+    [[nodiscard]] const rvwheel::dal::WheelState& State() const noexcept override { return real_.State(); }
+    Status ApplyLayout(const WheelInputLayout& layout, const DeviceReadinessPolicy& policy) noexcept override {
+        return real_.ApplyLayout(layout, policy);
+    }
+
+    Status ApplyForceFeedback(const rvwheel::dal::ForceFeedbackCommand& command) noexcept override {
+        ++applyCount;
+        lastCommand = command;
+        return Status::Ok();
+    }
+    Status StopForceFeedback() noexcept override {
+        ++stopCount;
+        return Status::Ok();
+    }
+
+    int applyCount = 0;
+    int stopCount = 0;
+    rvwheel::dal::ForceFeedbackCommand lastCommand{};
+
+private:
+    IWheelDevice& real_;
+};
 
 void PrintDiagnostic(LogLevel level, std::string_view message) {
     const char* label = level == LogLevel::Error ? "error" : (level == LogLevel::Warning ? "warning" : "info");
@@ -335,6 +374,8 @@ int DeviceProbeApp::Run() {
             return RunCapture();
         case ProbeMode::Bridge:
             return RunBridge();
+        case ProbeMode::FfbSimulate:
+            return RunFfbSimulate();
     }
     return 1;
 }
@@ -1160,6 +1201,139 @@ int DeviceProbeApp::RunCapture() {
 
     std::cout << "\nCapture finished: " << pollCount << " samples (" << failedPolls << " failed polls, " << droppedFrames
               << " dropped frames) written to " << writer.FinalPath().string() << "\n";
+    return 0;
+}
+
+int DeviceProbeApp::RunFfbSimulate() {
+    HiddenWindow window;
+    if (!window.IsValid()) {
+        std::cerr << "Failed to create the hidden Win32 window required for DirectInput.\n";
+        return 1;
+    }
+
+    auto manager = CreateManager(window);
+    manager->RefreshIfDue();
+    window.PumpMessages();
+
+    const auto selection = SelectDeviceForMonitoring(manager->DeviceCount());
+    if (selection.outcome == DeviceSelectionOutcome::NoDevices) {
+        PrintNoDevicesHelp();
+        return 1;
+    }
+    if (selection.outcome == DeviceSelectionOutcome::MultipleDevicesUsingFirst) {
+        std::cout << manager->DeviceCount()
+                  << " devices were found; simulating device #0 (no --device selector yet).\n";
+    }
+
+    IWheelDevice* device = FindDeviceByIndex(*manager, selection.selectedIndex);
+    if (device == nullptr) {
+        std::cerr << "Internal error: selected device index was not found after enumeration.\n";
+        return 1;
+    }
+
+    const ProfileRepository repo = LoadRepository(options_);
+    const AppliedProfileInfo profileInfo = ResolveAndApplyProfile(*device, options_, repo);
+
+    rvwheel::ffb::ForceFeedbackConfig config;
+    std::string configSource;
+    bool foundConfig = false;
+    for (const auto& entry : repo.MergedProfiles()) {
+        if (entry.profile.profileId == profileInfo.profileId && entry.profile.forceFeedback) {
+            config = *entry.profile.forceFeedback;
+            foundConfig = true;
+            break;
+        }
+    }
+    if (!foundConfig) {
+        // A demonstration-only config so the tool visibly produces
+        // something even with no forceFeedback block resolved. This is
+        // safe precisely because SimulatedForceFeedbackSink below makes it
+        // structurally impossible for this to reach the real device,
+        // regardless of `enabled`/gain values.
+        config.enabled = true;
+        config.masterGain = 0.5f;
+        config.springStrength = 0.3f;
+        config.damperStrength = 0.2f;
+        configSource = "no forceFeedback block resolved on this profile; using a built-in demonstration config";
+    } else {
+        configSource = "resolved from profile \"" + profileInfo.profileId + "\"";
+    }
+
+    std::cout << "=== RVWheel Force Feedback SIMULATION MODE ===\n"
+                 "No force is ever sent to the physical device in this mode: ApplyForceFeedback/StopForceFeedback\n"
+                 "are always routed to an in-process recording sink, never to the real device.\n\n";
+    std::cout << "Device:  " << device->Info().name << "\n";
+    std::cout << "Profile: " << (profileInfo.profileId.empty() ? "(none)" : profileInfo.profileId) << "  origin="
+              << FormatProfileOrigin(profileInfo.origin) << "\n";
+    std::cout << "FFB cfg: " << configSource << "\n";
+    std::cout << "         enabled=" << config.enabled << " masterGain=" << config.masterGain
+              << " spring=" << config.springStrength << " damper=" << config.damperStrength
+              << " maxTorqueNormalized=" << config.maxTorqueNormalized << "\n\n";
+
+    SimulatedForceFeedbackSink sink(*device);
+
+    std::vector<std::unique_ptr<rvwheel::ffb::IForceFeedbackSource>> sources;
+    sources.push_back(std::make_unique<rvwheel::ffb::SpringDamperSource>(config));
+    rvwheel::ffb::ForceFeedbackEngine engine(rvwheel::ffb::ForceFeedbackSafetyController(config),
+                                              rvwheel::ffb::ForceFeedbackMixer{}, std::move(sources));
+    engine.Enable();
+
+    const auto start = std::chrono::steady_clock::now();
+    const auto tickInterval =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / options_.rateHz));
+    constexpr std::chrono::milliseconds kPrintInterval{200};
+
+    std::uint64_t tickCount = 0;
+    auto nextTick = start;
+    auto lastPrint = start - kPrintInterval;
+    while (true) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed = now - start;
+        if (elapsed >= options_.duration || stopRequested_.load()) {
+            break;
+        }
+
+        window.PumpMessages();
+        manager->RefreshIfDue();
+        device->Poll();
+        ++tickCount;
+
+        // No real vehicle telemetry source is wired yet (see
+        // docs/research/FORCE_FEEDBACK_FEASIBILITY.md, open question 1);
+        // SpringDamperSource does not need it, so an empty sample is
+        // correct here, not a placeholder standing in for missing work.
+        const rvwheel::ffb::VehicleTelemetry telemetry{};
+        const auto decision = engine.Tick(sink, telemetry, device->State().steering, now, now);
+
+        if (now - lastPrint >= kPrintInterval) {
+            lastPrint = now;
+            std::cout << "[t=" << std::fixed << std::setprecision(1) << std::chrono::duration<double>(elapsed).count()
+                      << "s] state=" << rvwheel::ffb::ToString(engine.State())
+                      << " command(constantForce=" << std::setprecision(3) << decision.command.constantForce
+                      << ", spring=" << decision.command.spring << ", damper=" << decision.command.damper
+                      << ", gain=" << decision.command.gain << ")"
+                      << " sink.applyCount=" << sink.applyCount << " sink.stopCount=" << sink.stopCount << "\n";
+        }
+
+        nextTick += tickInterval;
+        const auto afterWork = std::chrono::steady_clock::now();
+        if (afterWork > nextTick) {
+            nextTick = afterWork;
+        } else {
+            std::this_thread::sleep_until(nextTick);
+        }
+    }
+
+    engine.Disable();
+    // Drain the ramp-down so the final StopForceFeedback (observed only on
+    // the sink -- see above) actually happens before this function returns.
+    for (int i = 0; i < 200 && engine.State() != rvwheel::ffb::ForceFeedbackState::Disabled; ++i) {
+        engine.TickWithoutTelemetry(sink, std::chrono::steady_clock::now());
+    }
+
+    std::cout << "\nSimulation finished: " << tickCount << " ticks. sink.applyCount=" << sink.applyCount
+              << ", sink.stopCount=" << sink.stopCount
+              << ". No ApplyForceFeedback/StopForceFeedback call ever reached the real device.\n";
     return 0;
 }
 

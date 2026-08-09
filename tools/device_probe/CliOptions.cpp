@@ -61,12 +61,13 @@ std::string CliParser::UsageText() {
            "  rvwheel_device_probe --monitor [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
            "  rvwheel_device_probe --capture <path.jsonl> [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
            "  rvwheel_device_probe --bridge [--rate <hz>] [--profile <id-or-path>]\n"
+           "  rvwheel_device_probe --ffb-simulate [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
            "\n"
            "Options:\n"
-           "  --duration <seconds>   How long --monitor/--capture run. Range [1, 3600], default 30.\n"
-           "  --rate <hz>            Poll rate for --monitor/--capture/--bridge. Range [1, 250], default 60.\n"
+           "  --duration <seconds>   How long --monitor/--capture/--ffb-simulate run. Range [1, 3600], default 30.\n"
+           "  --rate <hz>            Tick rate for --monitor/--capture/--bridge/--ffb-simulate. Range [1, 250], default 60.\n"
            "  --profile <id-or-path> Force a specific profile (by profileId or a .json path) instead of automatic\n"
-           "                         resolution. Only valid with --monitor/--capture/--bridge.\n"
+           "                         resolution. Only valid with --monitor/--capture/--bridge/--ffb-simulate.\n"
            "  --output <path>        Where --calibrate saves the generated profile. Defaults to a name derived\n"
            "                         from the device under the user profiles directory. Only valid with --calibrate.\n"
            "  --profiles-dir <path>  Overrides the user profiles directory (where --calibrate saves and user\n"
@@ -76,14 +77,18 @@ std::string CliParser::UsageText() {
            "\n"
            "Notes:\n"
            "  - Hardware is re-enumerated at most once every 5 seconds; not configurable here.\n"
-           "  - Force feedback is never applied by this tool.\n"
+           "  - Force feedback is never applied by --list/--monitor/--capture/--bridge/--calibrate.\n"
+           "  - --ffb-simulate computes and prints force feedback commands using the resolved profile's\n"
+           "    forceFeedback config, but ALWAYS routes them to an in-process recording sink -- it never calls\n"
+           "    ApplyForceFeedback/StopForceFeedback on the real device, so no actuator is ever driven by it.\n"
            "  - --bridge runs until Ctrl+C and publishes the latest safe input snapshot under LOCALAPPDATA.\n"
-           "  - Exactly one of --help/--list/--profiles/--calibrate/--monitor/--capture/--bridge must be given.\n";
+           "  - Exactly one of --help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate must be given.\n";
 }
 
 CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     constexpr const char* kConflictingModeMessage =
-        "Conflicting mode flags: only one of --help/--list/--profiles/--calibrate/--monitor/--capture/--bridge may be given.";
+        "Conflicting mode flags: only one of "
+        "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate may be given.";
 
     CliParseResult result;
     bool modeSet = false;
@@ -138,6 +143,12 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
                 return Fail(kConflictingModeMessage);
             }
             result.options.mode = ProbeMode::Bridge;
+            modeSet = true;
+        } else if (arg == L"--ffb-simulate") {
+            if (modeSet) {
+                return Fail(kConflictingModeMessage);
+            }
+            result.options.mode = ProbeMode::FfbSimulate;
             modeSet = true;
         } else if (arg == L"--capture") {
             if (modeSet) {
@@ -222,22 +233,24 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     }
 
     if (!modeSet) {
-        return Fail("No mode given. Specify exactly one of --help/--list/--profiles/--calibrate/--monitor/--capture/--bridge.");
+        return Fail("No mode given. Specify exactly one of "
+                     "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate.");
     }
 
-    if (durationSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture) {
-        return Fail("--duration only applies to --monitor and --capture.");
+    if (durationSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture &&
+        result.options.mode != ProbeMode::FfbSimulate) {
+        return Fail("--duration only applies to --monitor, --capture, and --ffb-simulate.");
     }
     if (rateSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture &&
-        result.options.mode != ProbeMode::Bridge) {
-        return Fail("--rate only applies to --monitor, --capture, and --bridge.");
+        result.options.mode != ProbeMode::Bridge && result.options.mode != ProbeMode::FfbSimulate) {
+        return Fail("--rate only applies to --monitor, --capture, --bridge, and --ffb-simulate.");
     }
     if (outputSet && result.options.mode != ProbeMode::Calibrate) {
         return Fail("--output only applies to --calibrate.");
     }
     if (profileSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture &&
-        result.options.mode != ProbeMode::Bridge) {
-        return Fail("--profile only applies to --monitor, --capture, and --bridge.");
+        result.options.mode != ProbeMode::Bridge && result.options.mode != ProbeMode::FfbSimulate) {
+        return Fail("--profile only applies to --monitor, --capture, --bridge, and --ffb-simulate.");
     }
     if (parentPidSet && result.options.mode != ProbeMode::Bridge) {
         return Fail("--parent-pid only applies to --bridge.");

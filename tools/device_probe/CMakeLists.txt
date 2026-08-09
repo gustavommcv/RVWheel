@@ -36,7 +36,7 @@ add_executable(rvwheel_device_probe
     ProfileLocations.cpp
 )
 
-target_link_libraries(rvwheel_device_probe PRIVATE rvwheel_device_probe_core rvwheel::dal rvwheel::profiles)
+target_link_libraries(rvwheel_device_probe PRIVATE rvwheel_device_probe_core rvwheel::dal rvwheel::profiles rvwheel::ffb)
 
 if(MSVC)
     target_compile_options(rvwheel_device_probe PRIVATE /W4 /permissive-)
