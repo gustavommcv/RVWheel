@@ -23,6 +23,11 @@ if(TARGET rvwheel_device_probe_core)
     )
 endif()
 
+set(_rvwheel_launcher_test_sources "")
+if(TARGET rvwheel_launcher_core)
+    list(APPEND _rvwheel_launcher_test_sources LauncherCoreTests.cpp)
+endif()
+
 add_executable(rvwheel_dal_tests
     AxisNormalizerTests.cpp
     AxisSourceTests.cpp
@@ -34,6 +39,7 @@ add_executable(rvwheel_dal_tests
     ProfileResolverTests.cpp
     Win32HeaderSmokeTest.cpp
     ${_rvwheel_probe_test_sources}
+    ${_rvwheel_launcher_test_sources}
 )
 
 target_include_directories(rvwheel_dal_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -49,6 +55,10 @@ if(TARGET rvwheel_device_probe_core)
         DeviceProbeCalibrationTests.cpp
         StableRawAxisSamplerTests.cpp
     )
+endif()
+
+if(TARGET rvwheel_launcher_core)
+    target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel_launcher_core)
 endif()
 
 if(MSVC)

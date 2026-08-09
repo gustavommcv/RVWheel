@@ -978,8 +978,21 @@ int DeviceProbeApp::RunBridge() {
     std::uint64_t bridgeSequence = 0;
     std::uint64_t writeFailures = 0;
     std::uint64_t polls = 0;
+    HANDLE parentProcess = nullptr;
+    if (options_.parentProcessId != 0) {
+        parentProcess = OpenProcess(SYNCHRONIZE, FALSE, options_.parentProcessId);
+        if (parentProcess == nullptr) {
+            std::cerr << "Could not supervise launcher process " << options_.parentProcessId
+                      << "; refusing to leave an orphan bridge running.\n";
+            return 1;
+        }
+    }
 
-    while (!stopRequested_.load()) {
+    const auto parentIsAlive = [&]() noexcept {
+        return parentProcess == nullptr || WaitForSingleObject(parentProcess, 0) == WAIT_TIMEOUT;
+    };
+
+    while (!stopRequested_.load() && parentIsAlive()) {
         window.PumpMessages();
         manager->RefreshIfDue();
         const Status pollStatus = device->Poll();
@@ -1026,6 +1039,9 @@ int DeviceProbeApp::RunBridge() {
     BridgeStateRecord stopped{};
     stopped.sequence = ++bridgeSequence;
     static_cast<void>(WriteBridgeStateAtomically(bridgePath, stopped));
+    if (parentProcess != nullptr) {
+        CloseHandle(parentProcess);
+    }
     std::cout << "\nBridge stopped safely after " << polls << " polls (" << writeFailures << " publish failures).\n";
     return 0;
 }

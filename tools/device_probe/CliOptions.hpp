@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -21,6 +22,9 @@ struct CliOptions {
     ProbeMode mode = ProbeMode::Help;
     std::chrono::seconds duration{30};
     int rateHz = 60;
+    // Optional launcher supervision for --bridge. When non-zero, the bridge
+    // exits cleanly as soon as this process no longer exists.
+    std::uint32_t parentProcessId = 0;
     std::filesystem::path capturePath;
 
     // --calibrate [--output <path>]: empty means the wizard picks a

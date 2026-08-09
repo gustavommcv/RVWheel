@@ -45,6 +45,7 @@ add_subdirectory(src/Profiles)
 # subdirectory is processed.
 if(RVWHEEL_BUILD_TOOLS)
     add_subdirectory(tools/device_probe)
+    add_subdirectory(tools/launcher)
 endif()
 
 if(RVWHEEL_BUILD_TESTS)

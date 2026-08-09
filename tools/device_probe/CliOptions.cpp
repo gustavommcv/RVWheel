@@ -72,6 +72,7 @@ std::string CliParser::UsageText() {
            "  --profiles-dir <path>  Overrides the user profiles directory (where --calibrate saves and user\n"
            "                         overrides load from) instead of %LOCALAPPDATA%\\RVWheel\\profiles. Valid with\n"
            "                         any mode.\n"
+           "  --parent-pid <pid>     Optional launcher process to supervise. Only valid with --bridge.\n"
            "\n"
            "Notes:\n"
            "  - Hardware is re-enumerated at most once every 5 seconds; not configurable here.\n"
@@ -90,8 +91,10 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     bool rateSet = false;
     bool outputSet = false;
     bool profileSet = false;
+    bool parentPidSet = false;
     long long durationSeconds = kDefaultDurationSeconds;
     long long rateHz = kDefaultRateHz;
+    long long parentProcessId = 0;
     std::filesystem::path capturePath;
     std::filesystem::path calibrateOutputPath;
     std::filesystem::path profilesDirOverride;
@@ -186,6 +189,16 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
                 return Fail("--output requires a non-empty file path argument.");
             }
             outputSet = true;
+        } else if (arg == L"--parent-pid") {
+            if (i + 1 >= args.size()) {
+                return Fail("--parent-pid requires a numeric process ID argument.");
+            }
+            long long parsed = 0;
+            if (!TryParsePositiveInt(args[++i], parsed) || parsed == 0) {
+                return Fail("--parent-pid must be a positive process ID.");
+            }
+            parentProcessId = parsed;
+            parentPidSet = true;
         } else if (arg == L"--profiles-dir") {
             if (i + 1 >= args.size()) {
                 return Fail("--profiles-dir requires a directory path argument.");
@@ -226,9 +239,13 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
         result.options.mode != ProbeMode::Bridge) {
         return Fail("--profile only applies to --monitor, --capture, and --bridge.");
     }
+    if (parentPidSet && result.options.mode != ProbeMode::Bridge) {
+        return Fail("--parent-pid only applies to --bridge.");
+    }
 
     result.options.duration = std::chrono::seconds{durationSeconds};
     result.options.rateHz = static_cast<int>(rateHz);
+    result.options.parentProcessId = static_cast<std::uint32_t>(parentProcessId);
     result.options.capturePath = std::move(capturePath);
     result.options.calibrateOutputPath = std::move(calibrateOutputPath);
     result.options.profilesDirOverride = std::move(profilesDirOverride);

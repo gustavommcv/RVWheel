@@ -47,6 +47,17 @@ TEST_CASE("CliParser: --bridge rejects duration", "[DeviceProbe][CliParser][Brid
     REQUIRE_FALSE(CliParser::Parse({L"--bridge", L"--duration", L"10"}).success);
 }
 
+TEST_CASE("CliParser: --bridge accepts a launcher parent process", "[DeviceProbe][CliParser][Bridge]") {
+    const auto result = CliParser::Parse({L"--bridge", L"--parent-pid", L"4242"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.parentProcessId == 4242);
+}
+
+TEST_CASE("CliParser: --parent-pid is bridge-only and rejects zero", "[DeviceProbe][CliParser][Bridge][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--list", L"--parent-pid", L"4242"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--bridge", L"--parent-pid", L"0"}).success);
+}
+
 TEST_CASE("CliParser: --capture requires and preserves a path argument", "[DeviceProbe][CliParser]") {
     const auto result = CliParser::Parse({L"--capture", L"g923-capture.jsonl"});
     REQUIRE(result.success);

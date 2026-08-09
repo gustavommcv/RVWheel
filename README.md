@@ -3,9 +3,9 @@
 RVWheel is an open-source project to add racing-wheel support to *RV There Yet?* through UE4SS, without modifying the game executable.
 
 > [!IMPORTANT]
-> RVWheel is currently a development preview. A manually installed UE4SS bridge
-> is playable on the validated game build, but there is not yet a packaged
-> end-user installer or automatic host launcher.
+> RVWheel is currently a development preview. The one-click launcher can install
+> and enable the RVWheel script, start its bridge, and open the game, but UE4SS
+> itself must still be installed in the game directory first.
 
 ## Current status
 
@@ -17,7 +17,8 @@ Working and validated:
 - versioned JSON device profiles with exact VID/PID matching;
 - guided calibration with continuous 60 Hz acquisition and stable-window sampling for unknown devices;
 - standalone `rvwheel_device_probe` for listing, monitoring, capturing, calibrating, and hosting the live bridge;
-- 132 unit tests passing in Release at the latest local validation;
+- native `rvwheel_launcher` for one-click mod sync, bridge supervision, and Steam game startup;
+- 138 unit tests passing in Release at the latest local validation;
 - Logitech G923 (`046D:C266`) detected on real hardware with 25 buttons, one POV, three pedal axes, steering, and reported FFB capability.
 - playable UE4SS integration validated with steering, throttle, brake, clutch,
   Logitech H-pattern gears 1–5, neutral, and reverse.
@@ -26,7 +27,7 @@ Still required before this is a polished installable mod:
 
 - collect verified profiles for additional Logitech, Moza, Thrustmaster, Fanatec, and generic DirectInput devices;
 - move game/button mappings into user-facing profile controls;
-- package the UE4SS layout and bridge host with automatic startup;
+- package UE4SS and the launcher into a polished end-user installer;
 - validate multiplayer behavior;
 - validate force feedback safely on real hardware.
 
@@ -52,6 +53,7 @@ src/Devices/DirectInput/   DirectInput 8 backend and raw-axis discovery
 src/Devices/Logitech/      Logitech abstraction; proprietary adapter is incomplete
 src/Profiles/              JSON profile loading, repository, and resolution
 tools/device_probe/        Standalone hardware probe and calibration workflow
+tools/launcher/            Native one-click Windows launcher
 mods/RVWheel/              Playable UE4SS Lua bridge
 mods/RVWheelDiscovery/     Runtime object/reflection diagnostics
 configs/default_profiles/  Verified built-in device profiles
@@ -95,7 +97,29 @@ The main build products are:
 
 - `rvwheel_dal.lib` — static device-abstraction library;
 - `rvwheel_profiles.lib` — static profile-system library;
-- `rvwheel_device_probe.exe` — standalone developer diagnostic tool.
+- `rvwheel_device_probe.exe` — standalone developer diagnostic tool and bridge host;
+- `rvwheel_launcher.exe` — native one-click game launcher.
+
+## One-click launcher
+
+Build `rvwheel_launcher` in Release, then double-click:
+
+```text
+build\tools\launcher\Release\rvwheel_launcher.exe
+```
+
+The Release output is self-contained for the RVWheel components: it includes the
+bridge host, the UE4SS `RVWheel` mod, and the default device profiles. The launcher:
+
+1. locates the Steam library containing *RV There Yet?*;
+2. verifies that UE4SS is installed;
+3. copies and enables the current RVWheel mod;
+4. starts the bridge without a console window;
+5. opens the game through Steam and keeps the bridge alive until the game exits.
+
+It safely reuses a game or bridge that is already running. Bridge diagnostics are
+written to `%LOCALAPPDATA%\RVWheel\logs\bridge.log`. Launcher failures are shown in
+a Windows message box instead of silently failing.
 
 ## Device probe
 
