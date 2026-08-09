@@ -88,6 +88,56 @@ trying again — do not simply retry with lower numbers and no explanation.
     correct at each new gain level. Never jump directly to a "realistic"
     gain.
 
+## Incident log
+
+**2026-08-09 — Step 4 (stop only): passed.** Real G923, exclusive
+acquisition succeeded, input stayed readable, `StopForceFeedback()`
+returned `Ok` with no effect ever created. No motion observed. See
+[`docs/research/FORCE_FEEDBACK_FEASIBILITY.md`](research/FORCE_FEEDBACK_FEASIBILITY.md)
+open question 2 — now resolved: exclusive FFB acquisition does not break
+input polling on this device.
+
+**2026-08-09 — Step 6 (weak spring, gain=0.1, strength=0.1): anomaly found,
+no unsafe motion reported.** Real G923. The effect ramped up correctly at
+first, but around t≈2.0s every subsequent `SetParameters`/`Stop` call
+started failing (generic `BackendError` at the time, HRESULT not yet
+captured), and the final `StopForceFeedback()` call also returned
+`BackendError`. The operator disconnected the USB cable as a precaution.
+**No unexpected motion, resistance, or vibration was reported** either
+during or after the test; the wheel's centering behavior after
+disconnecting was G HUB's own idle behavior, not an RVWheel-driven effect.
+
+Two real bugs were found and fixed from this single run, before any retest:
+
+1. `DirectInputDevice::ApplyForceFeedback` unconditionally called
+   `ApplyConstantForce`/`ApplyDamper` even when those components were
+   always zero and never requested, which silently created and started
+   two extra zero-magnitude effects alongside the one real spring effect
+   the operator asked for. Fixed: a channel is now only touched if it is
+   genuinely nonzero or an effect for it already exists.
+2. `ForceFeedbackSafetyController`'s internal ramp state initialized `gain`
+   to `ForceFeedbackCommand`'s own default of `1.0` while
+   `spring`/`damper`/`constantForce` initialized to `0`. Since
+   `SpringDamperSource` always requests full-scale gain and relies on the
+   controller to clamp it down, this meant **spring reached its (small)
+   target quickly while gain was still ramping down from "full,"
+   producing a stronger, uninted transient during the first ~1.6 seconds**
+   before both converged to the configured low values. Fixed: the ramp
+   state now starts at all-zero, including gain, so no field can ever lead
+   another to an overshoot. A regression test now asserts the
+   `spring * gain` product never exceeds its final steady-state value
+   during ramp-up, at any slew rate.
+
+**Root cause of the t≈2.0s `SetParameters`/`Stop` failure is not yet
+confirmed.** `DirectInputDevice`'s error messages now include the raw
+HRESULT (they did not during this run), so a future attempt will produce a
+diagnosable error instead of a generic one. Do not retest on real hardware
+until this is understood well enough to have a specific hypothesis to
+check, or until the operator explicitly decides to retest anyway with the
+improved diagnostics to gather more data. This project treats "it seemed
+fine after we fixed something else" as insufficient evidence to declare a
+hardware-facing bug resolved.
+
 ## Recording results
 
 For each step, record: date, exact command/config used, hardware

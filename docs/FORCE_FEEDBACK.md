@@ -1,28 +1,29 @@
 # Force Feedback
 
 > [!IMPORTANT]
-> Force feedback is **not validated on real hardware yet**. Every piece
-> described here has been exercised in a hardware-independent unit test
-> suite and, for the DirectInput backend's capability detection and the
-> simulation pipeline end-to-end, against a real connected G923 in
-> read-only/simulated mode — but no actual force has ever been sent to an
-> actuator. See [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md)
-> for the gated procedure that will change that, and
+> Force feedback is **not validated on real hardware**. A first gated test
+> against a real G923 (2026-08-09) passed Step 4 (stop-only) cleanly, but
+> Step 6 (a weak spring) surfaced a real bug in this project's own ramp
+> logic (now fixed) and an unresolved hardware/driver error after ~2
+> seconds of real effect activity. No unsafe motion was reported at any
+> point, but this is not yet a validated feature. See the **Incident log**
+> in [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md) and
 > [docs/research/FORCE_FEEDBACK_FEASIBILITY.md](research/FORCE_FEEDBACK_FEASIBILITY.md)
-> for the research this design is built on. Do not enable
+> before doing anything else with real hardware. Do not enable
 > `forceFeedback.enabled` in a profile expecting a finished feature.
 
 ## Status at a glance
 
 | Piece | Status |
 |---|---|
-| DirectInput effect creation/update/stop (`CreateEffect`, `SetParameters`, `Stop`, `SendForceFeedbackCommand`) | Implemented, backed by primary Microsoft documentation, unvalidated on real hardware |
+| DirectInput effect creation/update/stop (`CreateEffect`, `SetParameters`, `Stop`, `SendForceFeedbackCommand`) | Implemented; a real spring effect ran ~2s successfully, then hit an unresolved `SetParameters`/`Stop` failure (see Incident log) |
 | Capability detection (`DIDC_FORCEFEEDBACK`) | Implemented and confirmed working against a real G923 (read-only) |
-| Safety controller (clamps, watchdog, slew rate, fault handling) | Implemented, unit-tested (35 tests), never exercised against real force |
-| Profile-configured spring/damper source | Implemented, unit-tested |
+| Exclusive FFB acquisition | Confirmed working on a real G923 without breaking input polling (hardware test Step 4) |
+| Safety controller (clamps, watchdog, slew rate, fault handling) | Implemented, unit-tested (37+ tests); a real gain-ramp overshoot bug was found and fixed after the first real activation |
+| Profile-configured spring/damper source | Implemented, unit-tested; ran briefly on real hardware, see Incident log |
 | Telemetry-derived self-aligning torque | **Not implemented** — see [Limitations](#limitations) |
 | Simulation mode (`--ffb-simulate`) | Implemented, exercised against real hardware in read-only/simulated form |
-| Real force applied to a device | **Never done, by anyone, in this project** |
+| Real force applied to a device | **Attempted once (weak spring, gain 0.1), no unsafe motion reported, but not yet declared safe/working** — see Incident log |
 
 ## Architecture
 

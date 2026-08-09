@@ -247,6 +247,28 @@ Strategy A is rejected outright per §2 — not a close call.
    definitive answer here — but the question is left open for anyone tuning
    that behavior later.
 
+## Update — first real hardware test (2026-08-09)
+
+Step 4 of [FORCE_FEEDBACK_HARDWARE_TEST.md](../FORCE_FEEDBACK_HARDWARE_TEST.md)
+passed, resolving open question 2 above: exclusive FFB acquisition on the
+G923 does not break input polling. Step 6 (a weak spring effect) surfaced a
+new, unresolved open question and two real bugs (now fixed) in RVWheel's
+own code — see the hardware test doc's Incident Log for full detail. The
+new open question:
+
+5. **Why did `IDirectInputEffect::SetParameters`/`Stop` start failing with
+   a generic error after roughly two seconds of a real, weak spring effect
+   running?** Not reproduced with HRESULT-level diagnostics yet (those were
+   added after this run, in response to it). Candidate hypotheses, none
+   confirmed: (a) `DirectInputDevice::Poll()`'s own `DIERR_INPUTLOST`
+   recovery path re-acquiring the device in a way that invalidates
+   previously created effects; (b) G HUB or Windows periodically
+   renegotiating access to a device this project has never held exclusively
+   before; (c) an interaction with the two extra, unrequested zero-magnitude
+   effects the first bug above caused to be created (now fixed, which may
+   or may not have been contributing). Do not assume any of these without
+   reproducing with the improved diagnostics.
+
 ## Risks carried forward into implementation
 
 - Enabling FFB changes the device's cooperative level for *this device

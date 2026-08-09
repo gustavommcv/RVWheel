@@ -130,7 +130,16 @@ private:
     ForceFeedbackState targetIdleState_ = ForceFeedbackState::Disabled; // Where SettleTowardTarget lands once zero+edge fire.
     bool pendingStopDeviceEdge_ = false;
 
-    rvwheel::dal::ForceFeedbackCommand appliedCommand_{}; // Last command actually returned via applyCommand.
+    // Last command actually returned via applyCommand -- and the ramp
+    // origin SlewLimit steps from. Explicitly all-zero INCLUDING gain: the
+    // aggregate-init `{}` would instead pick up ForceFeedbackCommand::gain's
+    // own default of 1.0, which meant the very first activation ramped
+    // spring/damper up to their target quickly while gain was still
+    // ramping down from "full" -- a real, stronger-than-configured
+    // transient window found during the first hardware test. Zero here is
+    // the one starting point that can never overshoot regardless of how
+    // any other field ramps.
+    rvwheel::dal::ForceFeedbackCommand appliedCommand_{0.0f, 0.0f, 0.0f, 0.0f};
     std::optional<Clock::time_point> lastAppliedAt_;
     std::optional<Clock::time_point> lastTelemetryTimestamp_;
     std::optional<Clock::time_point> lastUpdateCallAt_;

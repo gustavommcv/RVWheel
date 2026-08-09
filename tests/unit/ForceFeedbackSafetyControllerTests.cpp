@@ -320,6 +320,54 @@ TEST_CASE("ForceFeedbackSafetyController: stale telemetry timestamp is treated a
     REQUIRE(controller.State() == ForceFeedbackState::Armed);
 }
 
+TEST_CASE("ForceFeedbackSafetyController: gain ramps from zero on activation, never starting \"full\" while an "
+          "effect ramps up (regression: first real hardware test found spring reaching its target while gain was "
+          "still near 1.0, applying a stronger-than-configured transient)",
+          "[FFB][Safety][Regression]") {
+    ForceFeedbackConfig config = EnabledConfig();
+    config.slewRatePerSecond = 1.0f; // Slow enough that a bug would show up across several ticks, not one.
+    ForceFeedbackSafetyController controller(config);
+    controller.Enable();
+
+    const ForceFeedbackCommand requested{0.0f, 0.5f, 0.0f, 1.0f}; // A source always requesting full-scale gain.
+    float maxObservedProduct = 0.0f;
+    for (long long ms = 0; ms <= 2000; ms += 20) {
+        const ForceFeedbackDecision decision = controller.Update(requested, T(ms), T(ms));
+        if (decision.applyCommand) {
+            REQUIRE(decision.command.gain <= 1.0f + 1e-6f);
+            maxObservedProduct = (std::max)(maxObservedProduct, decision.command.spring * decision.command.gain);
+        }
+    }
+
+    // The final steady-state product (spring=0.5 clamped by nothing here,
+    // gain capped at masterGain=1.0 in EnabledConfig) is the ceiling; no
+    // intermediate frame may exceed it once both have finished ramping.
+    const float finalSpring = 0.5f;
+    const float finalGain = 1.0f;
+    REQUIRE(maxObservedProduct <= finalSpring * finalGain + 1e-3f);
+}
+
+TEST_CASE("ForceFeedbackSafetyController: with a low master gain, the effective spring*gain product never "
+          "overshoots the configured ceiling during ramp-up",
+          "[FFB][Safety][Regression]") {
+    ForceFeedbackConfig config = EnabledConfig();
+    config.masterGain = 0.1f;
+    config.slewRatePerSecond = 1.0f;
+    ForceFeedbackSafetyController controller(config);
+    controller.Enable();
+
+    const ForceFeedbackCommand requested{0.0f, 0.1f, 0.0f, 1.0f};
+    float maxObservedProduct = 0.0f;
+    for (long long ms = 0; ms <= 2000; ms += 20) {
+        const ForceFeedbackDecision decision = controller.Update(requested, T(ms), T(ms));
+        if (decision.applyCommand) {
+            maxObservedProduct = (std::max)(maxObservedProduct, decision.command.spring * decision.command.gain);
+        }
+    }
+
+    REQUIRE(maxObservedProduct <= 0.1f * 0.1f + 1e-3f);
+}
+
 TEST_CASE("ForceFeedbackSafetyController: Diagnostics reports state and ages without mutating anything",
           "[FFB][Safety][Diagnostics]") {
     ForceFeedbackSafetyController controller(EnabledConfig());

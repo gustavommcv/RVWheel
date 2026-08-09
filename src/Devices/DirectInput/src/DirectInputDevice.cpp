@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <string>
+#include <utility>
 
 #include "DirectInputAxisMapping.hpp"
 
@@ -53,6 +55,18 @@ constexpr LONG kDIForceScale = 10000;
 // NotSupported status instead of a misleading BackendError.
 [[nodiscard]] bool IsUnsupportedEffectError(HRESULT hr) noexcept {
     return hr == E_NOTIMPL || hr == DIERR_UNSUPPORTED || hr == DIERR_INVALIDPARAM;
+}
+
+// The generic Status::BackendError strings this file used to return gave
+// no way to tell DIERR_INPUTLOST/DIERR_NOTACQUIRED (device temporarily
+// lost, expected to be transient) apart from a genuine, unexpected
+// failure. Always include the raw HRESULT so a real hardware run's log
+// (see docs/FORCE_FEEDBACK_HARDWARE_TEST.md's incident log) is
+// diagnosable after the fact instead of just saying "it failed".
+[[nodiscard]] std::string FormatHresult(HRESULT hr) noexcept {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "0x%08lX", static_cast<unsigned long>(hr));
+    return std::string(buffer);
 }
 
 } // namespace
@@ -358,15 +372,17 @@ Status DirectInputDevice::ApplyConstantForce(float normalizedForce) noexcept {
         const HRESULT hr = device_->CreateEffect(GUID_ConstantForce, &eff, &constantForceEffect_, nullptr);
         if (FAILED(hr)) {
             constantForceEffect_.Reset();
-            return IsUnsupportedEffectError(hr) ? Status::NotSupported("Constant force not supported by this device")
-                                                 : Status::BackendError("CreateEffect(GUID_ConstantForce) failed");
+            return IsUnsupportedEffectError(hr)
+                       ? Status::NotSupported("Constant force not supported by this device")
+                       : Status::BackendError("CreateEffect(GUID_ConstantForce) failed: " + FormatHresult(hr));
         }
         const HRESULT startHr = constantForceEffect_->Start(1, 0);
-        return FAILED(startHr) ? Status::BackendError("Failed to start constant force effect") : Status::Ok();
+        return FAILED(startHr) ? Status::BackendError("Failed to start constant force effect: " + FormatHresult(startHr))
+                                : Status::Ok();
     }
 
     const HRESULT hr = constantForceEffect_->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_START);
-    return FAILED(hr) ? Status::BackendError("Failed to update constant force effect") : Status::Ok();
+    return FAILED(hr) ? Status::BackendError("Failed to update constant force effect: " + FormatHresult(hr)) : Status::Ok();
 }
 
 namespace {
@@ -411,15 +427,17 @@ Status ApplyConditionEffect(Microsoft::WRL::ComPtr<IDirectInputEffect>& effect,
         const HRESULT hr = device->CreateEffect(effectType, &eff, &effect, nullptr);
         if (FAILED(hr)) {
             effect.Reset();
-            return IsUnsupportedEffectError(hr) ? Status::NotSupported(std::string(label) + " not supported by this device")
-                                                 : Status::BackendError(std::string("CreateEffect failed for ") + label);
+            return IsUnsupportedEffectError(hr)
+                       ? Status::NotSupported(std::string(label) + " not supported by this device")
+                       : Status::BackendError(std::string("CreateEffect failed for ") + label + ": " + FormatHresult(hr));
         }
         const HRESULT startHr = effect->Start(1, 0);
-        return FAILED(startHr) ? Status::BackendError(std::string("Failed to start ") + label) : Status::Ok();
+        return FAILED(startHr) ? Status::BackendError(std::string("Failed to start ") + label + ": " + FormatHresult(startHr))
+                                : Status::Ok();
     }
 
     const HRESULT hr = effect->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_START);
-    return FAILED(hr) ? Status::BackendError(std::string("Failed to update ") + label) : Status::Ok();
+    return FAILED(hr) ? Status::BackendError(std::string("Failed to update ") + label + ": " + FormatHresult(hr)) : Status::Ok();
 }
 
 } // namespace
@@ -443,7 +461,7 @@ Status DirectInputDevice::ApplyGain(float normalizedGain) noexcept {
     prop.dwData = static_cast<DWORD>(clamped * static_cast<float>(kDIForceScale));
 
     const HRESULT hr = device_->SetProperty(DIPROP_FFGAIN, &prop.diph);
-    return FAILED(hr) ? Status::BackendError("Failed to set global force feedback gain") : Status::Ok();
+    return FAILED(hr) ? Status::BackendError("Failed to set global force feedback gain: " + FormatHresult(hr)) : Status::Ok();
 }
 
 Status DirectInputDevice::ApplyForceFeedback(const rvwheel::dal::ForceFeedbackCommand& command) noexcept {
@@ -454,10 +472,20 @@ Status DirectInputDevice::ApplyForceFeedback(const rvwheel::dal::ForceFeedbackCo
         return Status::NotSupported("Device has no force feedback capability");
     }
 
+    // Only touch an effect channel that either already exists (so it can be
+    // ramped back down to zero, including all the way to Stop()) or is
+    // being asked for a genuinely nonzero value now. Without this guard, a
+    // spring-only command would also silently create and Start() zero-
+    // magnitude constant-force and damper effects the caller never asked
+    // for -- three concurrent effects on the same axis instead of one,
+    // which is exactly the kind of unrequested complexity a first real
+    // hardware run should not be exposed to. See
+    // docs/FORCE_FEEDBACK_HARDWARE_TEST.md's incident log.
     const Status gainStatus = ApplyGain(command.gain);
-    const Status constantStatus = ApplyConstantForce(command.constantForce);
-    const Status springStatus = ApplySpring(command.spring);
-    const Status damperStatus = ApplyDamper(command.damper);
+    const Status constantStatus =
+        (command.constantForce != 0.0f || constantForceEffect_) ? ApplyConstantForce(command.constantForce) : Status::Ok();
+    const Status springStatus = (command.spring != 0.0f || springEffect_) ? ApplySpring(command.spring) : Status::Ok();
+    const Status damperStatus = (command.damper != 0.0f || damperEffect_) ? ApplyDamper(command.damper) : Status::Ok();
 
     const std::array<const Status*, 4> results{&gainStatus, &constantStatus, &springStatus, &damperStatus};
 
@@ -484,21 +512,30 @@ Status DirectInputDevice::StopForceFeedback() noexcept {
         return Status::NotConnected("Cannot stop force feedback on a disconnected device");
     }
 
-    bool anyFailed = false;
-    for (IDirectInputEffect* effect : {constantForceEffect_.Get(), springEffect_.Get(), damperEffect_.Get()}) {
-        if (effect != nullptr && FAILED(effect->Stop())) {
-            anyFailed = true;
+    std::string failures;
+    const std::array<std::pair<IDirectInputEffect*, const char*>, 3> tracked{
+        {{constantForceEffect_.Get(), "constant force"}, {springEffect_.Get(), "spring"}, {damperEffect_.Get(), "damper"}}};
+    for (const auto& [effect, label] : tracked) {
+        if (effect == nullptr) {
+            continue;
+        }
+        const HRESULT hr = effect->Stop();
+        if (FAILED(hr)) {
+            if (!failures.empty()) {
+                failures += "; ";
+            }
+            failures += std::string(label) + ": " + FormatHresult(hr);
         }
     }
 
     // Device-wide safety net beyond the effects this instance tracks; see
-    // the destructor's comment. Deliberately not folded into `anyFailed`:
+    // the destructor's comment. Deliberately not folded into `failures`:
     // DIERR_NOTEXCLUSIVEACQUIRED here is an expected, harmless outcome
     // whenever RVWheel is (as by default) running with nonexclusive input
     // access, not a real force-feedback failure.
     device_->SendForceFeedbackCommand(DISFFC_STOPALL);
 
-    return anyFailed ? Status::BackendError("Failed to stop one or more force feedback effects") : Status::Ok();
+    return failures.empty() ? Status::Ok() : Status::BackendError("Failed to stop: " + failures);
 }
 
 } // namespace rvwheel::devices
