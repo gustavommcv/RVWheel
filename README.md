@@ -3,7 +3,9 @@
 RVWheel is an open-source project to add racing-wheel support to *RV There Yet?* through UE4SS, without modifying the game executable.
 
 > [!IMPORTANT]
-> RVWheel is currently a development preview. The hardware abstraction, DirectInput backend, profile system, calibration foundation, and standalone device probe exist. The UE4SS/game-integration layer does not exist yet, so there is no mod package to install in the game today.
+> RVWheel is currently a development preview. A manually installed UE4SS bridge
+> is playable on the validated game build, but there is not yet a packaged
+> end-user installer or automatic host launcher.
 
 ## Current status
 
@@ -14,16 +16,18 @@ Working and validated:
 - normalized steering, pedal, button, and POV snapshots;
 - versioned JSON device profiles with exact VID/PID matching;
 - guided calibration with continuous 60 Hz acquisition and stable-window sampling for unknown devices;
-- standalone `rvwheel_device_probe` for listing, monitoring, and capturing hardware input;
-- 128 unit tests passing in Debug and Release at the latest local validation;
+- standalone `rvwheel_device_probe` for listing, monitoring, capturing, calibrating, and hosting the live bridge;
+- 132 unit tests passing in Release at the latest local validation;
 - Logitech G923 (`046D:C266`) detected on real hardware with 25 buttons, one POV, three pedal axes, steering, and reported FFB capability.
+- playable UE4SS integration validated with steering, throttle, brake, clutch,
+  Logitech H-pattern gears 1–5, neutral, and reverse.
 
-Still required before this is an installable mod:
+Still required before this is a polished installable mod:
 
 - collect verified profiles for additional Logitech, Moza, Thrustmaster, Fanatec, and generic DirectInput devices;
-- implement the input mapper and user-facing profile controls;
-- implement UE4SS/game hooks for vehicle input;
-- package and test an installable mod layout;
+- move game/button mappings into user-facing profile controls;
+- package the UE4SS layout and bridge host with automatic startup;
+- validate multiplayer behavior;
 - validate force feedback safely on real hardware.
 
 See [the G923 hardware baseline](docs/hardware/G923_DIRECTINPUT_CAPTURE.md) for measured behavior and unresolved findings.
@@ -31,7 +35,7 @@ See [the G923 hardware baseline](docs/hardware/G923_DIRECTINPUT_CAPTURE.md) for 
 ## Architecture
 
 ```text
-Game integration (future UE4SS layer)
+UE4SS game integration and fail-safe bridge
                  │
 Input mapping and device profiles
                  │
@@ -48,6 +52,8 @@ src/Devices/DirectInput/   DirectInput 8 backend and raw-axis discovery
 src/Devices/Logitech/      Logitech abstraction; proprietary adapter is incomplete
 src/Profiles/              JSON profile loading, repository, and resolution
 tools/device_probe/        Standalone hardware probe and calibration workflow
+mods/RVWheel/              Playable UE4SS Lua bridge
+mods/RVWheelDiscovery/     Runtime object/reflection diagnostics
 configs/default_profiles/  Verified built-in device profiles
 tests/unit/                Hardware-independent Catch2 tests
 docs/                      Architecture prompts and hardware evidence
@@ -102,9 +108,14 @@ After a Release build:
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --calibrate
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --monitor --duration 30 --rate 60
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --capture wheel-capture.jsonl --duration 30 --rate 60
+.\build\tools\device_probe\Release\rvwheel_device_probe.exe --bridge --rate 60
 ```
 
 The probe never applies force feedback. Hardware captures (`*.jsonl`) are local diagnostic artifacts and are ignored by Git; derived, reviewed findings belong under `docs/hardware/`.
+
+For the manually validated UE4SS installation and current limitations, see
+[the first in-game test](docs/game-integration/UE4SS_FIRST_TEST.md) and the
+[bridge README](mods/RVWheel/README.md).
 
 ## Device profiles
 

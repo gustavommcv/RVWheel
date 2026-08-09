@@ -17,6 +17,7 @@
 #include <windows.h>
 
 #include "CalibrationWizard.hpp"
+#include "BridgeStateFormatter.hpp"
 #include "CaptureWriter.hpp"
 #include "ConsoleRenderer.hpp"
 #include "DeviceSelection.hpp"
@@ -65,6 +66,7 @@ void PrintDiagnostic(LogLevel level, std::string_view message) {
     params.window = window.Handle();
     params.refreshInterval = std::chrono::seconds{5};
     params.diagnostics = &PrintDiagnostic;
+    params.requestExclusiveForceFeedbackAccess = false;
     return CreateDefaultDeviceManager(params);
 }
 
@@ -290,6 +292,27 @@ void PrintDeviceSummary(IWheelDevice& device, const AppliedProfileInfo& profileI
     std::cout << "  povs         " << static_cast<int>(info.capabilities.povCount) << "\n";
 }
 
+[[nodiscard]] bool WriteBridgeStateAtomically(const std::filesystem::path& outputPath,
+                                              const BridgeStateRecord& record) {
+    std::filesystem::path temporaryPath = outputPath;
+    temporaryPath += L".tmp";
+
+    {
+        std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
+        if (!output.is_open()) {
+            return false;
+        }
+        const std::string encoded = BridgeStateFormatter::Format(record);
+        output.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+        output.close();
+        if (!output) {
+            return false;
+        }
+    }
+
+    return MoveFileExW(temporaryPath.c_str(), outputPath.c_str(), MOVEFILE_REPLACE_EXISTING) != FALSE;
+}
+
 } // namespace
 
 DeviceProbeApp::DeviceProbeApp(CliOptions options, std::atomic<bool>& stopRequested)
@@ -310,6 +333,8 @@ int DeviceProbeApp::Run() {
             return RunMonitor();
         case ProbeMode::Capture:
             return RunCapture();
+        case ProbeMode::Bridge:
+            return RunBridge();
     }
     return 1;
 }
@@ -894,6 +919,114 @@ int DeviceProbeApp::RunMonitor() {
 
     std::cout << "\nMonitor finished: " << pollCount << " polls, " << failedPolls << " failed, " << droppedFrames
               << " dropped.\n";
+    return 0;
+}
+
+int DeviceProbeApp::RunBridge() {
+    HiddenWindow window;
+    if (!window.IsValid()) {
+        std::cerr << "Failed to create the hidden Win32 window required for DirectInput.\n";
+        return 1;
+    }
+
+    const std::filesystem::path bridgePath = ResolveBridgeStatePath();
+    if (bridgePath.empty()) {
+        std::cerr << "LOCALAPPDATA is unavailable; cannot resolve the bridge state path.\n";
+        return 1;
+    }
+
+    std::error_code directoryError;
+    std::filesystem::create_directories(bridgePath.parent_path(), directoryError);
+    if (directoryError) {
+        std::cerr << "Failed to create bridge state directory: " << directoryError.message() << "\n";
+        return 1;
+    }
+
+    auto manager = CreateManager(window);
+    manager->RefreshIfDue();
+    window.PumpMessages();
+
+    const auto selection = SelectDeviceForMonitoring(manager->DeviceCount());
+    if (selection.outcome == DeviceSelectionOutcome::NoDevices) {
+        PrintNoDevicesHelp();
+        return 1;
+    }
+    if (selection.outcome == DeviceSelectionOutcome::MultipleDevicesUsingFirst) {
+        std::cout << manager->DeviceCount() << " devices were found; bridge uses device #0 (no --device selector yet).\n";
+    }
+
+    IWheelDevice* device = FindDeviceByIndex(*manager, selection.selectedIndex);
+    if (device == nullptr) {
+        std::cerr << "Internal error: selected device index was not found after enumeration.\n";
+        return 1;
+    }
+
+    const ProfileRepository repo = LoadRepository(options_);
+    const AppliedProfileInfo profileInfo = ResolveAndApplyProfile(*device, options_, repo);
+    std::cout << "RVWheel bridge host\n"
+              << "Device:  " << device->Info().name << "\n"
+              << "Profile: " << (profileInfo.profileId.empty() ? "(none)" : profileInfo.profileId) << "  origin="
+              << FormatProfileOrigin(profileInfo.origin) << "\n"
+              << "Reason:  " << profileInfo.reason << "\n"
+              << "State:   " << bridgePath.string() << "\n"
+              << "Rate:    " << options_.rateHz << " Hz\n\n"
+              << "Move a wheel axis once if readiness is AwaitingActivation. Press Ctrl+C to stop safely.\n";
+
+    const auto frameInterval =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / options_.rateHz));
+    auto nextTick = std::chrono::steady_clock::now();
+    std::uint64_t bridgeSequence = 0;
+    std::uint64_t writeFailures = 0;
+    std::uint64_t polls = 0;
+
+    while (!stopRequested_.load()) {
+        window.PumpMessages();
+        manager->RefreshIfDue();
+        const Status pollStatus = device->Poll();
+        ++polls;
+
+        const auto& state = device->State();
+        const auto& capabilities = device->Info().capabilities;
+        BridgeStateRecord record{};
+        record.sequence = ++bridgeSequence;
+        record.connected = state.connected;
+        record.valid = pollStatus.IsOk() && state.valid;
+        record.steering = state.steering;
+        record.throttle = state.throttle;
+        record.brake = state.brake;
+        record.clutch = capabilities.hasClutch ? state.clutch : 0.0f;
+        record.vendorId = device->Info().vendorId.value_or(0);
+        record.productId = device->Info().productId.value_or(0);
+        const std::size_t buttonLimit = std::min<std::size_t>(state.buttons.size(), capabilities.buttonCount);
+        for (std::size_t buttonIndex = 0; buttonIndex < buttonLimit; ++buttonIndex) {
+            if (state.buttons[buttonIndex]) {
+                const std::size_t wordIndex = buttonIndex / 32;
+                const std::size_t bitIndex = buttonIndex % 32;
+                record.buttonWords[wordIndex] |= (std::uint32_t{1} << bitIndex);
+            }
+        }
+
+        if (!WriteBridgeStateAtomically(bridgePath, record)) {
+            ++writeFailures;
+            if (writeFailures == 1 || writeFailures % 120 == 0) {
+                std::cerr << "Warning: failed to publish bridge frame " << record.sequence
+                          << " (will retry next poll).\n";
+            }
+        }
+
+        nextTick += frameInterval;
+        const auto afterWork = std::chrono::steady_clock::now();
+        if (afterWork > nextTick) {
+            nextTick = afterWork;
+        } else {
+            std::this_thread::sleep_until(nextTick);
+        }
+    }
+
+    BridgeStateRecord stopped{};
+    stopped.sequence = ++bridgeSequence;
+    static_cast<void>(WriteBridgeStateAtomically(bridgePath, stopped));
+    std::cout << "\nBridge stopped safely after " << polls << " polls (" << writeFailures << " publish failures).\n";
     return 0;
 }
 

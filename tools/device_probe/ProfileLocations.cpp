@@ -39,4 +39,13 @@ std::filesystem::path ResolveUserProfilesDirectory() {
     return std::filesystem::path(buffer) / L"RVWheel" / L"profiles";
 }
 
+std::filesystem::path ResolveBridgeStatePath() {
+    wchar_t buffer[MAX_PATH];
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return {};
+    }
+    return std::filesystem::path(buffer) / L"RVWheel" / L"runtime" / L"bridge-state.txt";
+}
+
 } // namespace rvwheel::tools::probe

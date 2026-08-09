@@ -58,7 +58,9 @@ This is a device/driver acquisition transient, not the stable resting calibratio
 - Device reports 25 buttons and one POV.
 - The protocol observed button indices: `0, 1, 2, 3, 4, 6, 7, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22`.
 - POV observations covered centered plus all eight directions.
-- Physical-label-to-button-index mapping was not captured systematically and remains future profile work.
+- The Logitech Driving Force shifter connected through the G923 base was later
+  captured systematically: neutral reports no button, gates 1–6 report buttons
+  `12–17`, and reverse reports button `18`.
 
 ## Architectural conclusions
 
@@ -140,5 +142,7 @@ controls to rest, a 15-second Release run reported:
 - final poll status `Ok`.
 
 This completes the real-hardware validation of device discovery, profile selection, activation
-gating, readiness, axis normalization, and continuous polling for this G923. Force feedback and
-in-game integration remain separate, unvalidated milestones.
+gating, readiness, axis normalization, continuous polling, all four driving axes, and the attached
+H-pattern shifter for this G923. The same setup subsequently passed a playable in-game test for
+steering, throttle, brake, clutch-gated forward gears 1–5, neutral, and reverse. Force feedback
+remains a separate, unvalidated milestone.

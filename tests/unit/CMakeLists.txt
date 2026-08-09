@@ -19,6 +19,7 @@ if(TARGET rvwheel_device_probe_core)
     list(APPEND _rvwheel_probe_test_sources
         DeviceProbeParsingTests.cpp
         DeviceProbeFormattingTests.cpp
+        BridgeStateFormatterTests.cpp
     )
 endif()
 

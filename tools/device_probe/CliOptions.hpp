@@ -12,6 +12,7 @@ enum class ProbeMode {
     List,
     Monitor,
     Capture,
+    Bridge,
     Profiles,
     Calibrate,
 };
@@ -34,7 +35,7 @@ struct CliOptions {
     // unaffected -- it is always resolved relative to the executable.
     std::filesystem::path profilesDirOverride;
 
-    // --monitor/--capture ... --profile <profileId-or-path>: forces a
+    // --monitor/--capture/--bridge ... --profile <profileId-or-path>: forces a
     // specific profile instead of automatic resolution. Empty means
     // auto-resolve via the profile system. Kept as a wide string (not
     // narrowed) since it may be a filesystem path with non-ASCII

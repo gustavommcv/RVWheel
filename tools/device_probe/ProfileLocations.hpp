@@ -19,4 +19,8 @@ namespace rvwheel::tools::probe {
 // eagerly.
 [[nodiscard]] std::filesystem::path ResolveUserProfilesDirectory();
 
+// %LOCALAPPDATA%\RVWheel\runtime\bridge-state.txt. The bridge host creates
+// the parent directory on startup. Empty if LOCALAPPDATA is unavailable.
+[[nodiscard]] std::filesystem::path ResolveBridgeStatePath();
+
 } // namespace rvwheel::tools::probe

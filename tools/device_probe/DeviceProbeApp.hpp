@@ -25,6 +25,7 @@ private:
     [[nodiscard]] int RunCalibrate();
     [[nodiscard]] int RunMonitor();
     [[nodiscard]] int RunCapture();
+    [[nodiscard]] int RunBridge();
 
     CliOptions options_;
     std::atomic<bool>& stopRequested_;

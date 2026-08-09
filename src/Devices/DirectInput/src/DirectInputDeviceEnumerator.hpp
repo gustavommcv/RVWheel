@@ -20,7 +20,10 @@ namespace rvwheel::devices {
 // refresh interval — the enumerator simply keeps returning an empty list.
 class DirectInputDeviceEnumerator final : public rvwheel::dal::IDeviceEnumerator {
 public:
-    DirectInputDeviceEnumerator(HINSTANCE moduleInstance, HWND window, rvwheel::dal::DiagnosticSink diagnostics);
+    DirectInputDeviceEnumerator(HINSTANCE moduleInstance,
+                                HWND window,
+                                rvwheel::dal::DiagnosticSink diagnostics,
+                                bool requestExclusiveForceFeedbackAccess = false);
 
     std::vector<std::unique_ptr<rvwheel::dal::IWheelDevice>> Enumerate() override;
 
@@ -31,6 +34,7 @@ private:
     HINSTANCE moduleInstance_;
     HWND window_;
     rvwheel::dal::DiagnosticSink diagnostics_;
+    bool requestExclusiveForceFeedbackAccess_ = false;
     Microsoft::WRL::ComPtr<IDirectInput8A> directInput_;
     bool creationFailedOnce_ = false;
 };

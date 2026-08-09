@@ -23,8 +23,8 @@ std::unique_ptr<DeviceManager> CreateDefaultDeviceManager(const DeviceManagerIni
     enumerators.push_back(std::make_unique<rvwheel::devices::LogitechDeviceEnumerator>(std::move(logitechSdk), params.diagnostics));
 #endif
 
-    enumerators.push_back(
-        std::make_unique<rvwheel::devices::DirectInputDeviceEnumerator>(params.instance, params.window, params.diagnostics));
+    enumerators.push_back(std::make_unique<rvwheel::devices::DirectInputDeviceEnumerator>(
+        params.instance, params.window, params.diagnostics, params.requestExclusiveForceFeedbackAccess));
 
     return std::make_unique<DeviceManager>(std::move(enumerators), params.refreshInterval, &std::chrono::steady_clock::now,
                                             params.diagnostics);

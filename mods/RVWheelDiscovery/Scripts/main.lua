@@ -18,6 +18,13 @@ local REFLECTION_KEYWORDS = {
     "move",
 }
 
+local GEAR_FUNCTIONS = {
+    SetGearItem = true,
+    SetManualGear = true,
+    ChangeGear = true,
+    MoveShifterPosition = true,
+}
+
 local function log(message)
     print(string.format("%s %s\n", PREFIX, message))
 end
@@ -101,6 +108,22 @@ local function capture_vehicle_reflection()
             if is_relevant_member(func) then
                 emitted = emitted + 1
                 log("function: " .. func:GetFullName())
+                local functionName = func:GetFName():ToString()
+                if GEAR_FUNCTIONS[functionName] then
+                    local parameterCount = 0
+                    func:ForEachProperty(function(property)
+                        parameterCount = parameterCount + 1
+                        log(string.format(
+                            "gear parameter: function=%s index=%d type=%s name=%s full=%s",
+                            functionName,
+                            parameterCount,
+                            property:GetClass():GetFName():ToString(),
+                            property:GetFName():ToString(),
+                            property:GetFullName()
+                        ))
+                    end)
+                    log(string.format("gear signature: function=%s parameters=%d", functionName, parameterCount))
+                end
             end
             if emitted >= 300 then
                 return true
@@ -115,6 +138,21 @@ local function capture_vehicle_reflection()
             if is_relevant_member(property) then
                 emitted = emitted + 1
                 log("property: " .. property:GetFullName())
+                if property:GetFName():ToString() == "Gears" and property:IsA(PropertyTypes.ArrayProperty) then
+                    local inner = property:GetInner()
+                    if inner ~= nil and inner:IsA(PropertyTypes.StructProperty) then
+                        local gearStruct = inner:GetStruct()
+                        log("gear array struct: " .. gearStruct:GetFullName())
+                        gearStruct:ForEachProperty(function(field)
+                            log(string.format(
+                                "gear array field: type=%s name=%s full=%s",
+                                field:GetClass():GetFName():ToString(),
+                                field:GetFName():ToString(),
+                                field:GetFullName()
+                            ))
+                        end)
+                    end
+                end
             end
             if emitted >= 300 then
                 return true

@@ -30,10 +30,12 @@ Ride/Binaries/Win64/
     `-- Mods/
 ```
 
-Copy [`mods/RVWheelDiscovery`](../../mods/RVWheelDiscovery) into the UE4SS
-`Mods` directory and add the following entry to `ue4ss/Mods/mods.txt`:
+Copy [`mods/RVWheel`](../../mods/RVWheel) and
+[`mods/RVWheelDiscovery`](../../mods/RVWheelDiscovery) into the UE4SS `Mods`
+directory and add the following entries to `ue4ss/Mods/mods.txt`:
 
 ```text
+RVWheel : 1
 RVWheelDiscovery : 1
 ```
 
@@ -63,8 +65,38 @@ Possession changes between the character and the Winnebago invoke
 `PlayerController.ClientRestart`, which gives RVWheel a reliable lifecycle hook
 for activating and deactivating vehicle input.
 
-This validates the loader and game-object discovery only. Wheel input injection
-is the next milestone; the discovery mod deliberately does not alter game state.
+The discovery mod deliberately does not alter game state. The separate
+`RVWheel` mod now supplies the validated input bridge described below.
+
+## Playable bridge result
+
+`rvwheel_device_probe --bridge --rate 60` publishes an atomically replaced,
+sequence-guarded `RVW2` frame under
+`%LOCALAPPDATA%/RVWheel/runtime/bridge-state.txt`. DirectInput uses
+non-exclusive background access so G HUB and the game can coexist with the
+host. The Lua consumer rejects torn, stale, disconnected, invalid, or
+non-finite frames and returns control to the native input path when the host
+stops.
+
+A real single-player drive validated:
+
+- steering from `-1` through `+1`, including the final AVS `Steering` property;
+- throttle and brake from `0` through `1`;
+- clutch as the safety gate for every H-pattern change;
+- Logitech shifter neutral, forward gears 1–5, and reverse;
+- safe coexistence of the game, G HUB, UE4SS, and the bridge host.
+
+The Logitech G923 PS/PC shifter reports buttons 12–17 for gates 1–6 and button
+18 for reverse. The game exposes five forward gears, so gate 6 intentionally
+resolves to neutral. Gear changes must update both the AVS vehicle and the
+game-specific `RGGearBox`; the established open-source
+[Gear Hotkeys](https://github.com/bitterbutt/RVThereYet-GearHotkeys) mod was
+used as the behavioral reference for that integration seam.
+
+The first direct `SetManualGear` experiment demonstrated why this distinction
+matters: AVS state changed without keeping the game's selector/HUD layer
+consistent. The final implementation instead drives the selector RPC, manual
+gear, and gearbox state together and requires at least 50% clutch input.
 
 ## Vehicle input API discovered
 
@@ -95,7 +127,8 @@ existing vehicle logic unless multiplayer testing proves otherwise.
 
 - `F8`: capture world, controller, pawn, and vehicle instances.
 - `F9`: enumerate input-related functions and properties on the possessed pawn.
-- `Ctrl+R`: hot reload UE4SS mods.
+- `Ctrl+R`: hot reload UE4SS mods. Use only during development; a full hot
+  reload tears down every mod and is significantly heavier than normal play.
 
 ## Removal
 

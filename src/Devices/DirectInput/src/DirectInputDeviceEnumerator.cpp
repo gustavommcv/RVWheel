@@ -88,8 +88,14 @@ BOOL CALLBACK CollectDeviceInstanceCallback(LPCDIDEVICEINSTANCEA instance, LPVOI
 
 } // namespace
 
-DirectInputDeviceEnumerator::DirectInputDeviceEnumerator(HINSTANCE moduleInstance, HWND window, rvwheel::dal::DiagnosticSink diagnostics)
-    : moduleInstance_(moduleInstance), window_(window), diagnostics_(std::move(diagnostics)) {}
+DirectInputDeviceEnumerator::DirectInputDeviceEnumerator(HINSTANCE moduleInstance,
+                                                         HWND window,
+                                                         rvwheel::dal::DiagnosticSink diagnostics,
+                                                         bool requestExclusiveForceFeedbackAccess)
+    : moduleInstance_(moduleInstance),
+      window_(window),
+      diagnostics_(std::move(diagnostics)),
+      requestExclusiveForceFeedbackAccess_(requestExclusiveForceFeedbackAccess) {}
 
 bool DirectInputDeviceEnumerator::EnsureDirectInput() noexcept {
     if (directInput_) {
@@ -131,13 +137,11 @@ std::unique_ptr<rvwheel::dal::IWheelDevice> DirectInputDeviceEnumerator::CreateD
 
     const bool hasForceFeedback = (caps.dwFlags & DIDC_FORCEFEEDBACK) != 0;
 
-    // Force feedback effects generally require exclusive access on
-    // DirectInput; devices without FFB use non-exclusive so other software
-    // can share them. DISCL_BACKGROUND keeps input flowing while the game
-    // window does not have focus (e.g. windowed/alt-tabbed), at the cost of
-    // this process being able to read the wheel even when it is not the
-    // foreground application.
-    const DWORD cooperativeFlags = DISCL_BACKGROUND | (hasForceFeedback ? DISCL_EXCLUSIVE : DISCL_NONEXCLUSIVE);
+    // FFB-capable hardware is not automatically acquired exclusively.
+    // Input-only clients must coexist with the game and vendor software;
+    // only an explicit FFB owner opts into exclusive access.
+    const bool useExclusiveAccess = hasForceFeedback && requestExclusiveForceFeedbackAccess_;
+    const DWORD cooperativeFlags = DISCL_BACKGROUND | (useExclusiveAccess ? DISCL_EXCLUSIVE : DISCL_NONEXCLUSIVE);
     if (FAILED(device->SetCooperativeLevel(window_, cooperativeFlags))) {
         diagnostics_(LogLevel::Warning, "SetCooperativeLevel failed; skipping device");
         return nullptr;

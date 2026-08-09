@@ -4,6 +4,7 @@
 # the core lib, without duplicating main() or depending on a hidden window
 # / console being creatable in a test run.
 add_library(rvwheel_device_probe_core STATIC
+    BridgeStateFormatter.cpp
     CalibrationWizard.cpp
     CliOptions.cpp
     DeviceSelection.cpp

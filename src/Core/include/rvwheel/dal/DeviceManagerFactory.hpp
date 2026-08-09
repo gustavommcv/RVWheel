@@ -37,6 +37,11 @@ struct DeviceManagerInitParams {
     HWND window = nullptr;
     std::chrono::milliseconds refreshInterval = DeviceManager::kDefaultRefreshInterval;
     DiagnosticSink diagnostics = NullDiagnosticSink();
+
+    // DirectInput force-feedback effects generally require exclusive
+    // cooperative access. Input-only consumers must leave this false so
+    // the game and vendor software can keep using the wheel concurrently.
+    bool requestExclusiveForceFeedbackAccess = false;
 };
 
 // Builds a production DeviceManager wired to the DirectInput backend

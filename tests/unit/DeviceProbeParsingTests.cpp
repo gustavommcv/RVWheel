@@ -35,6 +35,18 @@ TEST_CASE("CliParser: --monitor accepts explicit duration and rate", "[DevicePro
     REQUIRE(result.options.rateHz == 30);
 }
 
+TEST_CASE("CliParser: --bridge runs indefinitely and accepts rate/profile", "[DeviceProbe][CliParser][Bridge]") {
+    const auto result = CliParser::Parse({L"--bridge", L"--rate", L"120", L"--profile", L"wheel-profile"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::Bridge);
+    REQUIRE(result.options.rateHz == 120);
+    REQUIRE(result.options.profileSelector == L"wheel-profile");
+}
+
+TEST_CASE("CliParser: --bridge rejects duration", "[DeviceProbe][CliParser][Bridge][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--bridge", L"--duration", L"10"}).success);
+}
+
 TEST_CASE("CliParser: --capture requires and preserves a path argument", "[DeviceProbe][CliParser]") {
     const auto result = CliParser::Parse({L"--capture", L"g923-capture.jsonl"});
     REQUIRE(result.success);
@@ -111,7 +123,7 @@ TEST_CASE("CliParser: an unrecognized flag fails", "[DeviceProbe][CliParser][Inv
     REQUIRE_FALSE(result.success);
 }
 
-TEST_CASE("CliParser: --duration/--rate are rejected outside --monitor/--capture", "[DeviceProbe][CliParser][Invalid]") {
+TEST_CASE("CliParser: --duration/--rate are rejected outside polling modes", "[DeviceProbe][CliParser][Invalid]") {
     const auto result = CliParser::Parse({L"--list", L"--duration", L"10"});
     REQUIRE_FALSE(result.success);
 }
