@@ -89,6 +89,32 @@ TEST_CASE("CliParser: --ffb-simulate with no options uses documented defaults", 
     REQUIRE(result.options.rateHz == CliParser::kDefaultRateHz);
 }
 
+TEST_CASE("CliParser: --telemetry-monitor accepts duration/rate and uses documented defaults otherwise",
+          "[DeviceProbe][CliParser][TelemetryMonitor]") {
+    const auto withOptions = CliParser::Parse({L"--telemetry-monitor", L"--duration", L"10", L"--rate", L"30"});
+    REQUIRE(withOptions.success);
+    REQUIRE(withOptions.options.mode == ProbeMode::TelemetryMonitor);
+    REQUIRE(withOptions.options.duration == std::chrono::seconds{10});
+    REQUIRE(withOptions.options.rateHz == 30);
+
+    const auto withDefaults = CliParser::Parse({L"--telemetry-monitor"});
+    REQUIRE(withDefaults.success);
+    REQUIRE(withDefaults.options.duration == std::chrono::seconds{CliParser::kDefaultDurationSeconds});
+    REQUIRE(withDefaults.options.rateHz == CliParser::kDefaultRateHz);
+}
+
+TEST_CASE("CliParser: --telemetry-monitor rejects options that only apply to hardware-touching modes",
+          "[DeviceProbe][CliParser][TelemetryMonitor][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--telemetry-monitor", L"--parent-pid", L"1234"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--telemetry-monitor", L"--profile", L"wheel-profile"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--telemetry-monitor", L"--enable-force-feedback"}).success);
+}
+
+TEST_CASE("CliParser: --telemetry-monitor conflicts with other modes", "[DeviceProbe][CliParser][TelemetryMonitor][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--telemetry-monitor", L"--bridge"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--list", L"--telemetry-monitor"}).success);
+}
+
 TEST_CASE("CliParser: --ffb-simulate conflicts with other modes", "[DeviceProbe][CliParser][FfbSimulate][Invalid]") {
     REQUIRE_FALSE(CliParser::Parse({L"--ffb-simulate", L"--bridge"}).success);
     REQUIRE_FALSE(CliParser::Parse({L"--list", L"--ffb-simulate"}).success);

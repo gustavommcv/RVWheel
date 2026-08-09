@@ -48,4 +48,13 @@ std::filesystem::path ResolveBridgeStatePath() {
     return std::filesystem::path(buffer) / L"RVWheel" / L"runtime" / L"bridge-state.txt";
 }
 
+std::filesystem::path ResolveVehicleTelemetryPath() {
+    wchar_t buffer[MAX_PATH];
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return {};
+    }
+    return std::filesystem::path(buffer) / L"RVWheel" / L"runtime" / L"vehicle-telemetry.txt";
+}
+
 } // namespace rvwheel::tools::probe

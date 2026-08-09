@@ -13,6 +13,7 @@ add_library(rvwheel_device_probe_core STATIC
     MonitorFrameFormatter.cpp
     ProbeFormatting.cpp
     StableRawAxisSampler.cpp
+    VehicleTelemetryTransport.cpp
 )
 
 target_compile_features(rvwheel_device_probe_core PUBLIC cxx_std_20)

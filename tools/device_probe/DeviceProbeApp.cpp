@@ -29,6 +29,7 @@
 #include "ProbeFormatting.hpp"
 #include "ProfileLocations.hpp"
 #include "StableRawAxisSampler.hpp"
+#include "VehicleTelemetryTransport.hpp"
 
 #include "rvwheel/dal/DeviceManagerFactory.hpp"
 #include "rvwheel/dal/ICalibratableWheelDevice.hpp"
@@ -430,6 +431,8 @@ int DeviceProbeApp::Run() {
             return RunFfbHardwareTestStopOnly();
         case ProbeMode::FfbHardwareTestWeakEffect:
             return RunFfbHardwareTestWeakEffect();
+        case ProbeMode::TelemetryMonitor:
+            return RunTelemetryMonitor();
     }
     return 1;
 }
@@ -1780,6 +1783,153 @@ int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
 
     std::cout << "\nTest cancelled before force feedback was enabled.\n";
     return 1;
+}
+
+int DeviceProbeApp::RunTelemetryMonitor() {
+    std::cout << "RVWheel vehicle telemetry monitor\n"
+                 "Never enumerates or acquires a wheel device, and never calls "
+                 "ApplyForceFeedback/StopForceFeedback -- this mode only reads the transport file below.\n\n";
+
+    const std::filesystem::path telemetryPath = ResolveVehicleTelemetryPath();
+    if (telemetryPath.empty()) {
+        std::cerr << "LOCALAPPDATA is unavailable; cannot resolve the vehicle telemetry path.\n";
+        return 1;
+    }
+    std::cout << "Reading:  " << telemetryPath.string() << "\n"
+              << "Rate:     " << options_.rateHz << " Hz\n"
+              << "Duration: " << options_.duration.count() << " s\n\n"
+              << "Waiting for a fresh RVT1 frame (enter the vehicle in-game to publish one). The first "
+                 "sequence found on disk is only a baseline and is never reported as fresh by itself.\n";
+
+    // 500ms: generous relative to the Lua side's documented (not
+    // necessarily achieved -- see the measured-rate instrumentation
+    // below) 20 Hz publish cap, so ordinary jitter never reads as stale,
+    // but still clearly bounded -- this is the only place that decides
+    // staleness; the parser/tracker themselves have no opinion on the
+    // number.
+    constexpr std::chrono::milliseconds kStaleAfter{500};
+    VehicleTelemetryFreshnessTracker tracker(kStaleAfter);
+
+    const auto frameInterval =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / options_.rateHz));
+    const auto deadline = std::chrono::steady_clock::now() + options_.duration;
+    auto nextTick = std::chrono::steady_clock::now();
+
+    std::uint64_t polls = 0;
+    std::uint64_t freshPolls = 0;
+    std::optional<std::uint64_t> lastPrintedSequence;
+    bool wasStale = true;
+    std::optional<FreshVehicleTelemetrySample> lastFreshSample;
+    std::optional<std::chrono::milliseconds> lastUnavailableAge;
+
+    // Instrumentation: classifies each poll by the RAW parsed sequence
+    // (independent of the valid/local/baseline rules above), to measure
+    // how often the file actually changes -- never assumed from the Lua
+    // side's own 20 Hz publish-interval constant.
+    std::optional<std::uint64_t> lastRawSequence;
+    std::uint64_t newSequenceCount = 0;
+    std::uint64_t repeatedPollCount = 0;
+    std::uint64_t missingOrInvalidCount = 0;
+    std::optional<std::chrono::steady_clock::time_point> lastNewSequenceObservedAt;
+    auto minInterval = std::chrono::steady_clock::duration::max();
+    auto maxInterval = std::chrono::steady_clock::duration::zero();
+    auto sumIntervals = std::chrono::steady_clock::duration::zero();
+    std::uint64_t intervalSampleCount = 0;
+
+    while (!stopRequested_.load() && std::chrono::steady_clock::now() < deadline) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto parsed = ReadVehicleTelemetryFile(telemetryPath);
+        ++polls;
+
+        if (parsed.has_value()) {
+            if (!lastRawSequence.has_value() || parsed->sequence != *lastRawSequence) {
+                ++newSequenceCount;
+                if (lastNewSequenceObservedAt.has_value()) {
+                    const auto interval = now - *lastNewSequenceObservedAt;
+                    minInterval = (std::min)(minInterval, interval);
+                    maxInterval = (std::max)(maxInterval, interval);
+                    sumIntervals += interval;
+                    ++intervalSampleCount;
+                }
+                lastNewSequenceObservedAt = now;
+                lastRawSequence = parsed->sequence;
+            } else {
+                ++repeatedPollCount;
+            }
+        } else {
+            ++missingOrInvalidCount;
+        }
+
+        const auto current = tracker.Observe(parsed, now);
+
+        if (current.has_value()) {
+            ++freshPolls;
+            lastFreshSample = current;
+            const bool isNewSequence =
+                !lastPrintedSequence.has_value() || current->frame.sequence != *lastPrintedSequence;
+            if (isNewSequence || wasStale) {
+                lastPrintedSequence = current->frame.sequence;
+                const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - current->receivedAt);
+                std::cout << "[seq=" << current->frame.sequence << " age=" << age.count() << "ms] "
+                          << "valid=" << (current->frame.valid ? 1 : 0)
+                          << " local=" << (current->frame.localPlayer ? 1 : 0)
+                          << " speed=" << current->frame.speedMetersPerSecond << " m/s"
+                          << " forward=" << current->frame.forwardMetersPerSecond << " m/s"
+                          << " lateral=" << current->frame.lateralMetersPerSecond << " m/s yaw=";
+                if (current->frame.yawRateRadiansPerSecond) {
+                    std::cout << *current->frame.yawRateRadiansPerSecond << " rad/s\n";
+                } else {
+                    std::cout << "unavailable\n";
+                }
+            }
+            wasStale = false;
+        } else if (!wasStale) {
+            wasStale = true;
+            if (lastFreshSample.has_value()) {
+                const auto age =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFreshSample->receivedAt);
+                lastUnavailableAge = age;
+                std::cout << "telemetry unavailable (no fresh frame; last usable sample was " << age.count()
+                          << "ms old)\n";
+            } else {
+                std::cout << "telemetry unavailable (no fresh frame; nothing usable observed yet)\n";
+            }
+        }
+
+        nextTick += frameInterval;
+        const auto afterWork = std::chrono::steady_clock::now();
+        if (afterWork > nextTick) {
+            nextTick = afterWork;
+        } else {
+            std::this_thread::sleep_until(nextTick);
+        }
+    }
+
+    std::cout << "\nTelemetry monitor finished: " << polls << " polls, " << freshPolls << " with a fresh frame.\n";
+    std::cout << "Instrumentation (measured, not assumed from the Lua side's configured cap):\n"
+              << "  new sequences observed: " << newSequenceCount << "\n"
+              << "  repeated polls:         " << repeatedPollCount << "\n"
+              << "  missing/invalid reads:  " << missingOrInvalidCount << "\n";
+    if (intervalSampleCount > 0) {
+        using DoubleMs = std::chrono::duration<double, std::milli>;
+        const double minMs = std::chrono::duration_cast<DoubleMs>(minInterval).count();
+        const double maxMs = std::chrono::duration_cast<DoubleMs>(maxInterval).count();
+        const double avgMs = std::chrono::duration_cast<DoubleMs>(sumIntervals).count() /
+                              static_cast<double>(intervalSampleCount);
+        std::cout << "  new-sequence interval:  min=" << minMs << "ms avg=" << avgMs << "ms max=" << maxMs
+                  << "ms (n=" << intervalSampleCount << ")\n";
+        if (avgMs > 0.0) {
+            std::cout << "  effective rate:         " << (1000.0 / avgMs) << " Hz (measured across the whole run, "
+                       "including any idle/stale periods)\n";
+        }
+    } else {
+        std::cout << "  new-sequence interval:  not enough new sequences observed to measure\n";
+    }
+    if (lastUnavailableAge.has_value()) {
+        std::cout << "  age at last 'unavailable' transition: " << lastUnavailableAge->count() << "ms\n";
+    }
+
+    return 0;
 }
 
 } // namespace rvwheel::tools::probe

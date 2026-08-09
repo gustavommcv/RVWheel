@@ -5,6 +5,20 @@ local STALE_SECONDS = 2
 local localAppData = os.getenv("LOCALAPPDATA") or "."
 local bridgePath = localAppData .. "\\RVWheel\\runtime\\bridge-state.txt"
 local CLUTCH_SHIFT_THRESHOLD = 0.5
+
+-- RVT1 vehicle telemetry transport (Lua -> native), independent of the
+-- RVW2 bridge-state transport above (which carries native -> Lua input).
+-- See tools/device_probe/VehicleTelemetryTransport.hpp for the C++ side
+-- and docs/game-integration/AVS_TELEMETRY_DISCOVERY.md for why only
+-- GetVelocity/GetActorForwardVector/GetActorRightVector are used here --
+-- these are the only vehicle telemetry calls confirmed working in this
+-- game; nothing here uses reflection.
+local telemetryPath = localAppData .. "\\RVWheel\\runtime\\vehicle-telemetry.txt"
+local TELEMETRY_PUBLISH_INTERVAL_SECONDS = 1.0 / 20.0 -- 20 Hz cap.
+local CM_PER_S_TO_M_PER_S = 0.01
+local telemetrySequence = 0
+local lastTelemetryPublishClock = nil
+local telemetryErrorLogged = false
 local SHIFT_REVERSE = 1
 local SHIFT_NEUTRAL = 2
 local SHIFT_DRIVE = 3
@@ -261,6 +275,64 @@ local function applyInputs(vehicle, state)
     return ok
 end
 
+local function vehicleTelemetryDot(a, b)
+    return a.X * b.X + a.Y * b.Y + a.Z * b.Z
+end
+
+-- Publishes one RVT1 line, at most once every
+-- TELEMETRY_PUBLISH_INTERVAL_SECONDS, for the currently possessed local
+-- vehicle. Deliberately independent of readBridgeState()/applyInputs()
+-- below: this must keep publishing whether or not the input bridge is
+-- active, and must never touch input, gear, or force feedback state.
+-- `valid`/`local` are always written as 1 here because this function is
+-- only ever called from onVehicleTick after it has already confirmed
+-- `vehicle` is the possessed local pawn -- if the player leaves the
+-- vehicle, this function simply stops being called (the hook's own
+-- address check below fails first), so the file's last-written sample
+-- ages in place; a consumer is expected to treat that as staleness
+-- itself, not to expect an explicit "invalid" frame for that case.
+local function publishVehicleTelemetry(vehicle)
+    local now = os.clock()
+    if lastTelemetryPublishClock ~= nil and (now - lastTelemetryPublishClock) < TELEMETRY_PUBLISH_INTERVAL_SECONDS then
+        return
+    end
+    lastTelemetryPublishClock = now
+
+    local ok, errorMessage = pcall(function()
+        local velocity = vehicle:GetVelocity()
+        local forward = vehicle:GetActorForwardVector()
+        local right = vehicle:GetActorRightVector()
+
+        local speedCmPerS = math.sqrt(velocity.X * velocity.X + velocity.Y * velocity.Y + velocity.Z * velocity.Z)
+        local forwardCmPerS = vehicleTelemetryDot(velocity, forward)
+        local lateralCmPerS = vehicleTelemetryDot(velocity, right)
+
+        telemetrySequence = telemetrySequence + 1
+        local line = string.format(
+            "RVT1 %d 1 1 %.4f %.4f %.4f - %d",
+            telemetrySequence,
+            speedCmPerS * CM_PER_S_TO_M_PER_S,
+            forwardCmPerS * CM_PER_S_TO_M_PER_S,
+            lateralCmPerS * CM_PER_S_TO_M_PER_S,
+            telemetrySequence
+        )
+
+        local file = io.open(telemetryPath, "w")
+        if file == nil then
+            error("could not open telemetry file for writing: " .. telemetryPath)
+        end
+        file:write(line)
+        file:close()
+    end)
+
+    if ok then
+        telemetryErrorLogged = false
+    elseif not telemetryErrorLogged then
+        telemetryErrorLogged = true
+        log("vehicle telemetry publish failed: " .. tostring(errorMessage))
+    end
+end
+
 local function onVehicleTick(context)
     local vehicle = context:get()
     local playerPawn = UEHelpers.GetPlayer()
@@ -268,6 +340,11 @@ local function onVehicleTick(context)
         vehicle:GetAddress() ~= playerPawn:GetAddress() then
         return
     end
+
+    -- Independent of the bridge-input state below: telemetry publishes
+    -- every tick (rate-limited internally) regardless of whether the
+    -- input bridge is active.
+    publishVehicleTelemetry(vehicle)
 
     local state = readBridgeState()
     if state ~= nil then

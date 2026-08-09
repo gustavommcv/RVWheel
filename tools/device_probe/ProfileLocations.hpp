@@ -23,4 +23,11 @@ namespace rvwheel::tools::probe {
 // the parent directory on startup. Empty if LOCALAPPDATA is unavailable.
 [[nodiscard]] std::filesystem::path ResolveBridgeStatePath();
 
+// %LOCALAPPDATA%\RVWheel\runtime\vehicle-telemetry.txt -- the RVT1
+// transport file mods/RVWheel/Scripts/main.lua writes to and
+// --telemetry-monitor reads from. Same directory as the bridge state file
+// on purpose (both are runtime transports the bridge host already creates
+// on startup); empty if LOCALAPPDATA is unavailable.
+[[nodiscard]] std::filesystem::path ResolveVehicleTelemetryPath();
+
 } // namespace rvwheel::tools::probe

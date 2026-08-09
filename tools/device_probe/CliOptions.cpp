@@ -67,15 +67,18 @@ std::string CliParser::UsageText() {
            "                              [--ffb-cooperative-level background|foreground|foreground-focused]\n"
            "  rvwheel_device_probe --ffb-hw-test-weak-effect [--effect spring|damper]\n"
            "                              [--ffb-cooperative-level background|foreground|foreground-focused]\n"
+           "  rvwheel_device_probe --telemetry-monitor [--duration <seconds>] [--rate <hz>]\n"
            "\n"
            "Options:\n"
-           "  --duration <seconds>   How long --monitor/--capture/--ffb-simulate run. Range [1, 3600], default 30.\n"
+           "  --duration <seconds>   How long --monitor/--capture/--ffb-simulate/--telemetry-monitor run.\n"
+           "                         Range [1, 3600], default 30.\n"
            "                         For --bridge specifically, this is OPTIONAL and OFF by default: --bridge\n"
            "                         alone still runs until Ctrl+C exactly as before. Only when explicitly given\n"
            "                         does --bridge stop itself after the given number of seconds, through the\n"
            "                         exact same graceful shutdown path (EmergencyStop/StopForceFeedback/final\n"
            "                         state write) Ctrl+C already takes.\n"
-           "  --rate <hz>            Tick rate for --monitor/--capture/--bridge/--ffb-simulate. Range [1, 250], default 60.\n"
+           "  --rate <hz>            Tick rate for --monitor/--capture/--bridge/--ffb-simulate/--telemetry-monitor.\n"
+           "                         Range [1, 250], default 60.\n"
            "  --profile <id-or-path> Force a specific profile (by profileId or a .json path) instead of automatic\n"
            "                         resolution. Only valid with --monitor/--capture/--bridge/--ffb-simulate.\n"
            "  --output <path>        Where --calibrate saves the generated profile. Defaults to a name derived\n"
@@ -116,15 +119,18 @@ std::string CliParser::UsageText() {
            "    after --ffb-hw-test-stop-only has passed, per docs/FORCE_FEEDBACK_HARDWARE_TEST.md.\n"
            "  - --bridge runs until Ctrl+C (or, if --duration was explicitly given, until that many seconds\n"
            "    elapse) and publishes the latest safe input snapshot under LOCALAPPDATA.\n"
+           "  - --telemetry-monitor only reads and prints the vehicle-telemetry.txt file that\n"
+           "    mods/RVWheel/Scripts/main.lua writes; it NEVER enumerates or acquires a wheel device and NEVER\n"
+           "    calls ApplyForceFeedback/StopForceFeedback -- it is safe to run with no wheel attached at all.\n"
            "  - Exactly one of --help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/\n"
-           "    --ffb-hw-test-stop-only/--ffb-hw-test-weak-effect must be given.\n";
+           "    --ffb-hw-test-stop-only/--ffb-hw-test-weak-effect/--telemetry-monitor must be given.\n";
 }
 
 CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     constexpr const char* kConflictingModeMessage =
         "Conflicting mode flags: only one of "
         "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/--ffb-hw-test-stop-only/"
-        "--ffb-hw-test-weak-effect may be given.";
+        "--ffb-hw-test-weak-effect/--telemetry-monitor may be given.";
 
     CliParseResult result;
     bool modeSet = false;
@@ -202,6 +208,12 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
                 return Fail(kConflictingModeMessage);
             }
             result.options.mode = ProbeMode::FfbHardwareTestWeakEffect;
+            modeSet = true;
+        } else if (arg == L"--telemetry-monitor") {
+            if (modeSet) {
+                return Fail(kConflictingModeMessage);
+            }
+            result.options.mode = ProbeMode::TelemetryMonitor;
             modeSet = true;
         } else if (arg == L"--effect") {
             if (i + 1 >= args.size()) {
@@ -319,16 +331,20 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     if (!modeSet) {
         return Fail("No mode given. Specify exactly one of "
                      "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/"
-                     "--ffb-hw-test-stop-only/--ffb-hw-test-weak-effect.");
+                     "--ffb-hw-test-stop-only/--ffb-hw-test-weak-effect/--telemetry-monitor.");
     }
 
     if (durationSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture &&
-        result.options.mode != ProbeMode::FfbSimulate && result.options.mode != ProbeMode::Bridge) {
-        return Fail("--duration only applies to --monitor, --capture, --bridge, and --ffb-simulate.");
+        result.options.mode != ProbeMode::FfbSimulate && result.options.mode != ProbeMode::Bridge &&
+        result.options.mode != ProbeMode::TelemetryMonitor) {
+        return Fail("--duration only applies to --monitor, --capture, --bridge, --ffb-simulate, and "
+                     "--telemetry-monitor.");
     }
     if (rateSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture &&
-        result.options.mode != ProbeMode::Bridge && result.options.mode != ProbeMode::FfbSimulate) {
-        return Fail("--rate only applies to --monitor, --capture, --bridge, and --ffb-simulate.");
+        result.options.mode != ProbeMode::Bridge && result.options.mode != ProbeMode::FfbSimulate &&
+        result.options.mode != ProbeMode::TelemetryMonitor) {
+        return Fail("--rate only applies to --monitor, --capture, --bridge, --ffb-simulate, and "
+                     "--telemetry-monitor.");
     }
     if (outputSet && result.options.mode != ProbeMode::Calibrate) {
         return Fail("--output only applies to --calibrate.");

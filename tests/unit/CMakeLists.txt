@@ -22,6 +22,7 @@ if(TARGET rvwheel_device_probe_core)
         DeviceProbeParsingTests.cpp
         DeviceProbeFormattingTests.cpp
         BridgeStateFormatterTests.cpp
+        VehicleTelemetryTransportTests.cpp
     )
 endif()
 

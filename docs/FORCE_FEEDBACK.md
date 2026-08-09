@@ -289,7 +289,24 @@ rvwheel_device_probe.exe --ffb-hw-test-stop-only --ffb-cooperative-level foregro
 rvwheel_device_probe.exe --ffb-hw-test-stop-only --ffb-cooperative-level foreground-focused
 rvwheel_device_probe.exe --bridge --enable-force-feedback [--profile <id-or-path>] [--duration <s>]  # REAL force; see below.
 rvwheel_launcher.exe --enable-force-feedback [--profiles-dir <path>]  # REAL force, inside the actual game; see below.
+rvwheel_device_probe.exe --telemetry-monitor [--duration <s>] [--rate <hz>]  # Read-only; see below.
 ```
+
+`--telemetry-monitor` never enumerates or acquires a wheel device and
+never calls `ApplyForceFeedback`/`StopForceFeedback` -- it only parses and
+prints `%LOCALAPPDATA%\RVWheel\runtime\vehicle-telemetry.txt` (the `RVT1`
+transport `mods/RVWheel/Scripts/main.lua` writes), reporting sequence,
+age, speed, forward speed, and lateral speed, or "telemetry unavailable"
+when the file is missing, invalid, or stale. On exit it also prints
+measured instrumentation -- new-sequence/repeated/missing poll counts,
+min/avg/max interval between new sequences, an effective rate in Hz, and
+the real elapsed time until a fresh sample went stale -- computed from
+what was actually observed, never assumed from the Lua side's configured
+20 Hz cap; see
+[RVT1_TELEMETRY_VALIDATION.md](game-integration/RVT1_TELEMETRY_VALIDATION.md)
+for an in-game run's actual numbers. Safe to run with no wheel attached
+at all, and safe to run alongside a normal (non-FFB) launcher session in
+a second window.
 
 The launcher forwards `--enable-force-feedback` and `--profiles-dir`
 (when given) straight to the bridge it starts, plus its usual `--rate 60`
@@ -348,9 +365,16 @@ again, delete its `forceFeedback` block or set `enabled` back to `false`.
   spring/damper baseline exists. `--bridge --enable-force-feedback` applies
   a static centering spring regardless of speed, steering angle, terrain,
   or collisions -- it does not "feel" the game in any way yet.
-- No Lua-side telemetry capture exists; `VehicleTelemetry` has no real
-  producer. `BridgeForceFeedbackSession` always ticks the engine with an
-  empty `VehicleTelemetry`.
+- A Lua-side telemetry transport now exists end-to-end (`RVT1`, see
+  [ARCHITECTURE.md](ARCHITECTURE.md#vehicle-telemetry-protocol-rvt1) and
+  `--telemetry-monitor` below), producing a real, parsed
+  `rvwheel::ffb::VehicleTelemetry` value from the possessed vehicle's
+  actual speed/lateral velocity. **It is not connected to anything that
+  applies force.** `BridgeForceFeedbackSession` still always ticks the
+  engine with an empty `VehicleTelemetry`; nothing in this repository
+  makes force feedback react to vehicle speed yet. Yaw rate specifically
+  is not part of this transport's confirmed data (see
+  [AVS_TELEMETRY_DISCOVERY.md](game-integration/AVS_TELEMETRY_DISCOVERY.md)).
 - A normal player run of `rvwheel_launcher.exe` (no arguments) never
   enables force feedback regardless of profile content -- this stays true
   even though the launcher can now forward `--enable-force-feedback`/

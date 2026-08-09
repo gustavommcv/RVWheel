@@ -149,6 +149,86 @@ RVW2 <seq> <connected> <valid> <steering> <throttle> <brake> <clutch> <VID_hex> 
   mod uses — an early attempt that called only `SetManualGear` changed the
   physics transmission but left the HUD/selector inconsistent.
 
+### Vehicle telemetry protocol (`RVT1`)
+
+A second, independent text-file transport in the opposite direction from
+`RVW2` above — Lua (game) to native, not native to Lua:
+
+```text
+mods/RVWheel/Scripts/main.lua
+   - reads the possessed local vehicle's GetVelocity()/
+     GetActorForwardVector()/GetActorRightVector() every tick (no
+     reflection), throttled to a configured 20 Hz cap via os.clock() --
+     this is a cap, not a guarantee; --telemetry-monitor's instrumentation
+     (below) measures the rate actually achieved rather than assuming it
+   - writes atomically-enough (single short line) to
+     %LOCALAPPDATA%\RVWheel\runtime\vehicle-telemetry.txt
+        |
+        v
+RVT1 protocol (versioned, sequence-guarded text frame, same shape as RVW2)
+        |
+        v
+tools/device_probe/VehicleTelemetryTransport.hpp/.cpp
+   - ParseVehicleTelemetryLine: pure parsing, rejects rather than coerces
+     (torn reads, non-finite/out-of-domain numbers, malformed booleans,
+     a second non-empty line in the file)
+   - VehicleTelemetryFreshnessTracker: steady_clock-based staleness,
+     independent of the parser, never trusts a clock from the Lua side.
+     Centralizes three rules so no caller has to reimplement them: the
+     very first sequence observed is a baseline only and never returned
+     as fresh (a leftover file from a previous session cannot be mistaken
+     for live data); a newly observed sequence with valid=false or
+     local=false invalidates the previous usable sample immediately,
+     without waiting for it to time out; a repeated sequence number
+     preserves the original receivedAt exactly. Returns a
+     FreshVehicleTelemetrySample { frame, receivedAt } -- receivedAt is
+     the steady_clock reading at which that sequence was first observed
+     as new and valid/local, and it is the only timestamp
+     ToVehicleTelemetry ever uses (a caller cannot substitute "now").
+   - ToVehicleTelemetry: converts an already-validated
+     FreshVehicleTelemetrySample into rvwheel::ffb::VehicleTelemetry,
+     stamped with the sample's own receivedAt
+        |
+        v
+--telemetry-monitor (tools/device_probe, diagnostic only) -- also reports
+measured instrumentation: new-sequence/repeated/missing poll counts,
+min/avg/max interval between new sequences, an effective rate in Hz
+computed from that measured interval (never from the Lua side's
+configured cap), and the real elapsed time until a fresh sample goes
+stale. See
+[RVT1_TELEMETRY_VALIDATION.md](game-integration/RVT1_TELEMETRY_VALIDATION.md)
+for an actual in-game run's numbers.
+```
+
+```text
+RVT1 <seqStart> <valid> <local> <speedMps> <forwardMps> <lateralMps> <yawRateOrDash> <seqEnd>
+```
+
+- Mirrors `RVW2`'s own design exactly: sequence-guarded at both ends so a
+  torn read (Lua has no `MoveFileExW`-equivalent atomic replace available
+  to it, unlike the native bridge) is detected and discarded rather than
+  parsed partially; a leading version tag so an incompatible future layout
+  (`RVT2`) fails a fixed pattern match instead of being silently
+  misparsed.
+- Yaw rate is the one field allowed to be explicitly absent (`-`) rather
+  than a number, because it is not yet confirmed reachable from this game
+  at all — see
+  [AVS_TELEMETRY_DISCOVERY.md](game-integration/AVS_TELEMETRY_DISCOVERY.md).
+  A missing/invalid value is never coerced to `0`; the parser rejects the
+  whole frame instead for anything else that fails to parse or falls
+  outside a generous sanity domain.
+- Publishing is independent of the RVW2 input path: it runs whenever the
+  local player possesses the vehicle, whether or not the input bridge is
+  active, and never touches input, gear, or force feedback state.
+- **`--telemetry-monitor` is a read-only diagnostic.** It never enumerates
+  or acquires a wheel device and never calls `ApplyForceFeedback`/
+  `StopForceFeedback` — it only parses and prints the transport file.
+  **`ToVehicleTelemetry`'s output is not yet connected to
+  `BridgeForceFeedbackSession`/`ForceFeedbackEngine`.** Force feedback
+  still only ever applies the static, profile-configured spring described
+  in [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md); nothing in this
+  repository makes it react to vehicle speed yet.
+
 ### Launcher (`tools/launcher`)
 
 - `LauncherCore.hpp/.cpp` is deliberately pure (VDF parsing, `mods.txt`
@@ -208,6 +288,9 @@ without hardware, a Steam install, or UE4SS:
   strings/paths.
 - Protocol: `BridgeStateFormatter` is a pure formatter; the Lua parser's
   pattern can be exercised with literal `RVW2 ...` strings.
+- Telemetry: `VehicleTelemetryTransport`'s parser and freshness tracker
+  are pure (no device/DAL dependency at all) and take literal `RVT1 ...`
+  strings and caller-supplied `steady_clock` readings, respectively.
 
 This is why the test suite ([docs/DEVELOPMENT.md](DEVELOPMENT.md)) can cover
 device-absent, profile-absent, Steam-absent, and UE4SS-absent behavior
@@ -221,9 +304,12 @@ deterministically in CI, with no physical wheel attached.
   license and support boundaries that are cleaner left separate.
 - Force feedback has a real, opt-in path (`rvwheel_device_probe --bridge
   --enable-force-feedback`), physically validated on a real G923 for a
-  static centering spring, but no telemetry source feeds it yet (no
-  self-aligning torque, terrain, or collision effects), the launcher does
-  not enable it automatically, and reconnecting the wheel mid-session
-  requires restarting the bridge — see [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md).
+  static centering spring. A vehicle-telemetry transport (`RVT1`, see
+  above) now exists end-to-end from the game to a parsed
+  `rvwheel::ffb::VehicleTelemetry` value, but it is **not connected** to
+  `ForceFeedbackEngine` -- no self-aligning torque, terrain, or collision
+  effects exist yet, the launcher does not enable force feedback
+  automatically, and reconnecting the wheel mid-session requires
+  restarting the bridge — see [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md).
 - Only the Logitech G923 (VID `046D` PID `C266`) plus its attached H-pattern
   shifter has a verified profile and Lua gear mapping today.

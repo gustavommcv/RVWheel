@@ -29,6 +29,7 @@ private:
     [[nodiscard]] int RunFfbSimulate();
     [[nodiscard]] int RunFfbHardwareTestStopOnly();
     [[nodiscard]] int RunFfbHardwareTestWeakEffect();
+    [[nodiscard]] int RunTelemetryMonitor();
 
     CliOptions options_;
     std::atomic<bool>& stopRequested_;

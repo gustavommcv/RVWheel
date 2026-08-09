@@ -20,6 +20,7 @@ enum class ProbeMode {
     FfbSimulate,
     FfbHardwareTestStopOnly,
     FfbHardwareTestWeakEffect,
+    TelemetryMonitor,
 };
 
 // Which single condition effect --ffb-hw-test-weak-effect exercises. Only
