@@ -100,3 +100,45 @@ value was changed to paper over this discrepancy; the `direction`/readiness *cod
 (covered by unit tests) and applies exactly whatever a profile specifies -- what's in question is
 whether this specific profile's `inverted` values still match this specific unit's current raw
 behavior.
+
+## Addendum: guided calibration and activation gate validation
+
+A later hardware-guided session continuously polled raw axes, explicitly exercised every physical
+control once before taking the baseline, and captured stable 500 ms medians. It confirmed:
+
+| Role | Source | Released/center raw | Fully actuated raw | Direction |
+|---|---|---:|---:|---|
+| Steering | `X` | approximately `32767` | left `0`, right `65535` | normal |
+| Throttle | `Y` | `65535` | `0` | inverted |
+| Brake | `Rz` | `65535` | `0` | inverted |
+| Clutch | `Slider0` | `65535` | `0` | inverted |
+
+The generated user profile reloaded successfully as
+`logitech-g923-ps-pc-directinput` and therefore overrides the built-in profile without creating an
+ambiguous second exact match.
+
+A fresh probe process then exposed the remaining driver behavior precisely: before any physical
+movement, all three normalized pedals stayed at approximately `0.500008`, even beyond the previous
+fixed warmup. This is a stable placeholder, so elapsed time plus stability alone cannot distinguish
+it from real input.
+
+The verified G923 profile now enables `requireAxisActivation` with a normalized threshold of `0.05`.
+The readiness state remains `AwaitingActivation` and `WheelState.valid=false` until any mapped axis
+moves meaningfully; only then does the ordinary warmup/stability state machine begin. A real idle
+capture after this change produced 300/300 `AwaitingActivation` samples, zero valid samples, zero
+poll failures, and zero dropped frames. Thus the placeholder is no longer publishable as gameplay
+input.
+
+That final live monitor validation subsequently passed. After physical activation and returning all
+controls to rest, a 15-second Release run reported:
+
+- `readiness=Ready`, `connected=true`, and `valid=true`;
+- steering approximately `-0.003` at physical center;
+- throttle, brake, and clutch approximately `0.000` when released;
+- 853 polls at an observed 56.9 Hz;
+- zero failed polls and two dropped frames;
+- final poll status `Ok`.
+
+This completes the real-hardware validation of device discovery, profile selection, activation
+gating, readiness, axis normalization, and continuous polling for this G923. Force feedback and
+in-game integration remain separate, unvalidated milestones.

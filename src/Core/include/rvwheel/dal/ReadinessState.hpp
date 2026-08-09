@@ -13,6 +13,10 @@ enum class ReadinessState : std::uint8_t {
     // No WheelInputLayout has been applied to this device yet: the DAL has
     // nothing to say about steering/throttle/brake/clutch at all.
     Unconfigured,
+    // A verified profile says this driver may expose a stable placeholder
+    // until a physical control changes. Input remains invalid until that
+    // first meaningful axis change is observed.
+    AwaitingActivation,
     // A layout is applied but the device hasn't run for
     // minimumWarmupMilliseconds yet; input is being read but must not be
     // treated as gameplay-valid (see the G923 startup transient).

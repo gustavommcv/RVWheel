@@ -176,6 +176,26 @@ void ParseReadiness(const nlohmann::json& root, dal::DeviceReadinessPolicy& outP
             }
         }
     }
+
+    if (node.contains("requireAxisActivation")) {
+        if (!node["requireAxisActivation"].is_boolean()) {
+            validator.Fail("readiness.requireAxisActivation", "must be a boolean");
+        } else {
+            outPolicy.requireAxisActivation = node["requireAxisActivation"].get<bool>();
+        }
+    }
+    if (node.contains("activationThreshold")) {
+        if (!node["activationThreshold"].is_number()) {
+            validator.Fail("readiness.activationThreshold", "must be a number");
+        } else {
+            const double threshold = node["activationThreshold"].get<double>();
+            if (threshold <= 0.0 || threshold > 1.0) {
+                validator.Fail("readiness.activationThreshold", "must be greater than 0.0 and at most 1.0");
+            } else {
+                outPolicy.activationThreshold = static_cast<float>(threshold);
+            }
+        }
+    }
 }
 
 } // namespace
@@ -353,6 +373,8 @@ std::string ProfileLoader::Serialize(const DeviceProfile& profile) {
     readiness["stableSampleMilliseconds"] = profile.readiness.stableSample.count();
     readiness["maximumWaitMilliseconds"] = profile.readiness.maximumWait.count();
     readiness["stabilityTolerance"] = profile.readiness.stabilityTolerance;
+    readiness["requireAxisActivation"] = profile.readiness.requireAxisActivation;
+    readiness["activationThreshold"] = profile.readiness.activationThreshold;
     root["readiness"] = readiness;
 
     if (profile.expectedButtonCount || profile.expectedPovCount) {

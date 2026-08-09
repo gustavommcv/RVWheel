@@ -43,8 +43,11 @@ public:
     // otherwise. Called on initial layout application and on every
     // detected reconnect.
     void Reset(std::chrono::steady_clock::time_point now, bool layoutApplied) noexcept {
-        state_ = layoutApplied ? ReadinessState::WarmingUp : ReadinessState::Unconfigured;
+        state_ = layoutApplied ? (policy_.requireAxisActivation ? ReadinessState::AwaitingActivation
+                                                                : ReadinessState::WarmingUp)
+                               : ReadinessState::Unconfigured;
         startTime_ = now;
+        activationBaseline_.reset();
         stableWindowStart_.reset();
         stableWindowBaseline_.reset();
     }
@@ -61,6 +64,26 @@ public:
         }
         if (!startTime_) {
             startTime_ = now; // Defensive: Update() called before any Reset().
+        }
+
+        if (state_ == ReadinessState::AwaitingActivation) {
+            if (!activationBaseline_) {
+                activationBaseline_ = sample;
+                return state_;
+            }
+            if (!HasActivationMovement(sample, *activationBaseline_)) {
+                return state_;
+            }
+
+            // Start normal warmup only after the first genuine physical
+            // report. This prevents a stable driver placeholder from
+            // becoming Ready and does not punish a user who leaves the
+            // wheel untouched at a menu.
+            state_ = ReadinessState::WarmingUp;
+            startTime_ = now;
+            stableWindowStart_.reset();
+            stableWindowBaseline_.reset();
+            return state_;
         }
 
         const auto elapsedSinceStart = now - *startTime_;
@@ -93,6 +116,16 @@ public:
     [[nodiscard]] ReadinessState CurrentState() const noexcept { return state_; }
 
 private:
+    [[nodiscard]] bool HasActivationMovement(const ReadinessAxisSample& a,
+                                             const ReadinessAxisSample& b) const noexcept {
+        const float threshold = policy_.activationThreshold;
+        if (std::abs(a.steering - b.steering) >= threshold) return true;
+        if (std::abs(a.throttle - b.throttle) >= threshold) return true;
+        if (std::abs(a.brake - b.brake) >= threshold) return true;
+        if (a.hasClutch && b.hasClutch && std::abs(a.clutch - b.clutch) >= threshold) return true;
+        return false;
+    }
+
     [[nodiscard]] bool WithinTolerance(const ReadinessAxisSample& a, const ReadinessAxisSample& b) const noexcept {
         const float tol = policy_.stabilityTolerance;
         if (std::abs(a.steering - b.steering) > tol) return false;
@@ -105,6 +138,7 @@ private:
     DeviceReadinessPolicy policy_;
     ReadinessState state_ = ReadinessState::Unconfigured;
     std::optional<std::chrono::steady_clock::time_point> startTime_;
+    std::optional<ReadinessAxisSample> activationBaseline_;
     std::optional<std::chrono::steady_clock::time_point> stableWindowStart_;
     std::optional<ReadinessAxisSample> stableWindowBaseline_;
 };

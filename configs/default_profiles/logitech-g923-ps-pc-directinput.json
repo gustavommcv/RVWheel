@@ -29,7 +29,9 @@
   "readiness": {
     "minimumWarmupMilliseconds": 2200,
     "stableSampleMilliseconds": 250,
-    "maximumWaitMilliseconds": 5000
+    "maximumWaitMilliseconds": 5000,
+    "requireAxisActivation": true,
+    "activationThreshold": 0.05
   },
   "sanityChecks": {
     "expectedButtonCount": 25,

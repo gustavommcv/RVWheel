@@ -22,6 +22,15 @@ struct DeviceReadinessPolicy {
     // transient like the G923's.
     float stabilityTolerance = 0.01f;
 
+    // Some drivers publish a stable placeholder until the first physical
+    // input report. When enabled by a verified device profile, readiness
+    // remains AwaitingActivation until any mapped axis departs from the
+    // first observed sample by this normalized threshold. The warmup clock
+    // starts after activation, so an idle user is never timed out merely
+    // for not touching the device yet.
+    bool requireAxisActivation = false;
+    float activationThreshold = 0.05f;
+
     // Deliberately conservative: used only when no profile (built-in,
     // user, or generated) supplies its own readiness policy for a device,
     // i.e. exactly the "safe generic heuristic" path in the plug-and-play

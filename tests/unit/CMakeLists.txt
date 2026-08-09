@@ -44,7 +44,10 @@ target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel::dal rvwheel::profiles C
 
 if(TARGET rvwheel_device_probe_core)
     target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel_device_probe_core)
-    target_sources(rvwheel_dal_tests PRIVATE DeviceProbeCalibrationTests.cpp)
+    target_sources(rvwheel_dal_tests PRIVATE
+        DeviceProbeCalibrationTests.cpp
+        StableRawAxisSamplerTests.cpp
+    )
 endif()
 
 if(MSVC)

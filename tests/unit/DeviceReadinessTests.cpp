@@ -18,6 +18,55 @@ TEST_CASE("DeviceReadinessTracker: starts Unconfigured before any Reset", "[Devi
     REQUIRE(tracker.CurrentState() == ReadinessState::Unconfigured);
 }
 
+TEST_CASE("DeviceReadinessTracker: activation-gated profiles never accept a stable startup placeholder",
+          "[DeviceReadinessTracker][Activation]") {
+    DeviceReadinessPolicy policy{};
+    policy.requireAxisActivation = true;
+    policy.activationThreshold = 0.05f;
+    policy.minimumWarmup = std::chrono::milliseconds{100};
+    policy.stableSample = std::chrono::milliseconds{100};
+    policy.maximumWait = std::chrono::milliseconds{500};
+
+    DeviceReadinessTracker tracker(policy);
+    tracker.Reset(T(0), true);
+    REQUIRE(tracker.CurrentState() == ReadinessState::AwaitingActivation);
+
+    ReadinessAxisSample placeholder{};
+    placeholder.throttle = 0.5f;
+    placeholder.brake = 0.5f;
+    placeholder.clutch = 0.5f;
+    placeholder.hasClutch = true;
+
+    REQUIRE(tracker.Update(T(0), placeholder) == ReadinessState::AwaitingActivation);
+    REQUIRE(tracker.Update(T(10000), placeholder) == ReadinessState::AwaitingActivation);
+
+    ReadinessAxisSample activated = placeholder;
+    activated.steering = 0.25f;
+    activated.throttle = 0.0f;
+    activated.brake = 0.0f;
+    activated.clutch = 0.0f;
+    REQUIRE(tracker.Update(T(10001), activated) == ReadinessState::WarmingUp);
+    REQUIRE(tracker.Update(T(10102), activated) == ReadinessState::Stabilizing);
+    REQUIRE(tracker.Update(T(10203), activated) == ReadinessState::Ready);
+}
+
+TEST_CASE("DeviceReadinessTracker: sub-threshold noise does not satisfy activation", "[DeviceReadinessTracker][Activation]") {
+    DeviceReadinessPolicy policy{};
+    policy.requireAxisActivation = true;
+    policy.activationThreshold = 0.05f;
+
+    DeviceReadinessTracker tracker(policy);
+    tracker.Reset(T(0), true);
+
+    ReadinessAxisSample initial{};
+    REQUIRE(tracker.Update(T(0), initial) == ReadinessState::AwaitingActivation);
+    ReadinessAxisSample noise = initial;
+    noise.steering = 0.049f;
+    REQUIRE(tracker.Update(T(100), noise) == ReadinessState::AwaitingActivation);
+    noise.steering = 0.05f;
+    REQUIRE(tracker.Update(T(101), noise) == ReadinessState::WarmingUp);
+}
+
 TEST_CASE("DeviceReadinessTracker: stays WarmingUp until minimumWarmup elapses", "[DeviceReadinessTracker]") {
     DeviceReadinessPolicy policy{};
     policy.minimumWarmup = std::chrono::milliseconds{2200};

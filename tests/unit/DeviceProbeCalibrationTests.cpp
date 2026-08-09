@@ -124,6 +124,31 @@ TEST_CASE("CalibrationWizard: ignores small noise on other axes while choosing t
     REQUIRE(wizard.CurrentStep() == CalibrationStepKind::SteeringRight);
 }
 
+TEST_CASE("CalibrationWizard: refreshes a late-changing startup baseline before accepting steering center",
+          "[DeviceProbe][CalibrationWizard][Startup]") {
+    using namespace rvwheel::tools::probe;
+    CalibrationWizard wizard(G923LikeAxes());
+
+    REQUIRE(wizard.SubmitSnapshot(MakeSnapshot({{AxisSource::X, 32767},
+                                                {AxisSource::Y, 32767},
+                                                {AxisSource::RotationZ, 32767},
+                                                {AxisSource::Slider0, 32767}})) == CalibrationStepOutcome::Recorded);
+
+    const auto settled = MakeSnapshot({{AxisSource::X, 32767},
+                                       {AxisSource::Y, 65535},
+                                       {AxisSource::RotationZ, 65535},
+                                       {AxisSource::Slider0, 65535}});
+    REQUIRE(wizard.SubmitSnapshot(settled) == CalibrationStepOutcome::BaselineChanged);
+    REQUIRE(wizard.CurrentStep() == CalibrationStepKind::SteeringCenter);
+
+    REQUIRE(wizard.SubmitSnapshot(settled) == CalibrationStepOutcome::Recorded);
+    REQUIRE(wizard.CurrentStep() == CalibrationStepKind::SteeringLeft);
+    REQUIRE(wizard.SubmitSnapshot(MakeSnapshot({{AxisSource::X, 0},
+                                                {AxisSource::Y, 65535},
+                                                {AxisSource::RotationZ, 65535},
+                                                {AxisSource::Slider0, 65535}})) == CalibrationStepOutcome::Recorded);
+}
+
 TEST_CASE("CalibrationWizard: rejects a step where more than one axis moves above threshold", "[DeviceProbe][CalibrationWizard]") {
     using namespace rvwheel::tools::probe;
     CalibrationWizard wizard(G923LikeAxes());

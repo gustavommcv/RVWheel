@@ -94,6 +94,17 @@ CalibrationStepOutcome CalibrationWizard::SubmitSnapshot(const rvwheel::dal::Raw
             return CalibrationStepOutcome::Recorded;
 
         case CalibrationStepKind::SteeringCenter:
+            for (const auto& delta : ComputeDeltas(snapshot, baseline_)) {
+                if (delta.relativeDelta >= relativeThreshold_) {
+                    // Some drivers publish placeholder values until their
+                    // first physical input. Never let that late activation
+                    // silently become the steering reference: rebase the
+                    // all-controls-released snapshot and require a second
+                    // stable confirmation.
+                    baseline_ = snapshot;
+                    return CalibrationStepOutcome::BaselineChanged;
+                }
+            }
             steeringCenterSnapshot_ = snapshot;
             step_ = CalibrationStepKind::SteeringLeft;
             return CalibrationStepOutcome::Recorded;

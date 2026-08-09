@@ -52,6 +52,8 @@ std::string FormatReadinessState(rvwheel::dal::ReadinessState state) {
     switch (state) {
         case ReadinessState::Unconfigured:
             return "Unconfigured";
+        case ReadinessState::AwaitingActivation:
+            return "AwaitingActivation";
         case ReadinessState::WarmingUp:
             return "WarmingUp";
         case ReadinessState::Stabilizing:

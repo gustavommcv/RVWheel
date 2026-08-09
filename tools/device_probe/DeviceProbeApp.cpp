@@ -1,11 +1,14 @@
 #include "DeviceProbeApp.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <thread>
 
 #ifndef NOMINMAX
@@ -22,6 +25,7 @@
 #include "MonitorFrameFormatter.hpp"
 #include "ProbeFormatting.hpp"
 #include "ProfileLocations.hpp"
+#include "StableRawAxisSampler.hpp"
 
 #include "rvwheel/dal/DeviceManagerFactory.hpp"
 #include "rvwheel/dal/ICalibratableWheelDevice.hpp"
@@ -146,6 +150,70 @@ struct AppliedProfileInfo {
     std::string profileId;
     ProfileOrigin origin = ProfileOrigin::Unconfigured;
     std::string reason;
+};
+
+enum class CalibrationConsoleKey {
+    Enter,
+    Yes,
+    No,
+};
+
+// Reads Win32 console input records without blocking the thread that owns
+// the hidden window and DirectInput device. This lets calibration keep
+// pumping messages and polling hardware while the user prepares a control.
+class NonBlockingConsoleInput {
+public:
+    NonBlockingConsoleInput() : input_(GetStdHandle(STD_INPUT_HANDLE)) {
+        DWORD mode = 0;
+        interactive_ = input_ != nullptr && input_ != INVALID_HANDLE_VALUE && GetConsoleMode(input_, &mode) != FALSE;
+    }
+
+    [[nodiscard]] bool IsInteractive() const noexcept { return interactive_; }
+
+    void DiscardPendingEvents() const noexcept {
+        if (interactive_) {
+            FlushConsoleInputBuffer(input_);
+        }
+    }
+
+    [[nodiscard]] std::optional<CalibrationConsoleKey> TryReadKey() const noexcept {
+        if (!interactive_) {
+            return std::nullopt;
+        }
+
+        DWORD available = 0;
+        if (!GetNumberOfConsoleInputEvents(input_, &available) || available == 0) {
+            return std::nullopt;
+        }
+
+        INPUT_RECORD records[32]{};
+        DWORD read = 0;
+        const DWORD requested = (std::min)(available, static_cast<DWORD>(std::size(records)));
+        if (!ReadConsoleInputW(input_, records, requested, &read)) {
+            return std::nullopt;
+        }
+
+        for (DWORD i = 0; i < read; ++i) {
+            if (records[i].EventType != KEY_EVENT || !records[i].Event.KeyEvent.bKeyDown) {
+                continue;
+            }
+            const KEY_EVENT_RECORD& key = records[i].Event.KeyEvent;
+            if (key.wVirtualKeyCode == VK_RETURN) {
+                return CalibrationConsoleKey::Enter;
+            }
+            if (key.uChar.UnicodeChar == L'y' || key.uChar.UnicodeChar == L'Y') {
+                return CalibrationConsoleKey::Yes;
+            }
+            if (key.uChar.UnicodeChar == L'n' || key.uChar.UnicodeChar == L'N') {
+                return CalibrationConsoleKey::No;
+            }
+        }
+        return std::nullopt;
+    }
+
+private:
+    HANDLE input_ = INVALID_HANDLE_VALUE;
+    bool interactive_ = false;
 };
 
 [[nodiscard]] AppliedProfileInfo ResolveAndApplyProfile(IWheelDevice& device, const CliOptions& options, const ProfileRepository& repo) {
@@ -356,55 +424,176 @@ int DeviceProbeApp::RunCalibrate() {
         return 1;
     }
 
+    NonBlockingConsoleInput consoleInput;
+    if (!consoleInput.IsInteractive()) {
+        std::cerr << "Guided calibration requires an interactive Windows console. Run this command directly in "
+                     "PowerShell or Command Prompt instead of redirecting stdin.\n";
+        return 1;
+    }
+
     std::cout << "Calibrating: " << device->Info().name << "\n";
     std::cout << "Discovered axes (source: rawMin..rawMax, current):\n";
+    RawAxisSnapshot currentSnapshot{};
+    const Status initialPollStatus = calibratable->PollRawAxes(currentSnapshot);
     for (const auto& axis : axes) {
-        RawAxisSnapshot snapshot{};
-        calibratable->PollRawAxes(snapshot);
         std::int32_t current = 0;
-        for (std::uint8_t i = 0; i < snapshot.count; ++i) {
-            if (snapshot.samples[i].source == axis.source) {
-                current = snapshot.samples[i].rawValue;
+        for (std::uint8_t i = 0; i < currentSnapshot.count; ++i) {
+            if (currentSnapshot.samples[i].source == axis.source) {
+                current = currentSnapshot.samples[i].rawValue;
                 break;
             }
         }
         std::cout << "  " << rvwheel::dal::ToString(axis.source) << ": " << axis.rawMin << ".." << axis.rawMax << ", "
-                  << current << "\n";
+                  << (initialPollStatus.IsOk() ? std::to_string(current) : std::string{"unavailable"}) << "\n";
     }
     std::cout << "\n";
 
     CalibrationWizard wizard(axes);
 
-    const auto runStep = [&](const char* prompt) -> CalibrationStepOutcome {
+    constexpr std::chrono::milliseconds kPollInterval{17}; // Approximately 60 Hz, without a busy loop.
+    constexpr std::chrono::milliseconds kInitialAcquisition{2500};
+    constexpr std::chrono::milliseconds kStableWindow{500};
+    constexpr std::chrono::milliseconds kCaptureTimeout{10000};
+
+    const auto pollWithoutCapture = [&]() {
+        window.PumpMessages();
+        RawAxisSnapshot ignored{};
+        calibratable->PollRawAxes(ignored);
+    };
+
+    const auto waitForYesNo = [&](std::string_view prompt) -> std::optional<bool> {
+        consoleInput.DiscardPendingEvents();
+        std::cout << prompt << " [y/N] ";
+        std::cout.flush();
+        auto nextTick = std::chrono::steady_clock::now();
+        while (!stopRequested_.load()) {
+            pollWithoutCapture();
+            const auto key = consoleInput.TryReadKey();
+            if (key == CalibrationConsoleKey::Yes) {
+                std::cout << "y\n";
+                return true;
+            }
+            if (key == CalibrationConsoleKey::No || key == CalibrationConsoleKey::Enter) {
+                std::cout << "n\n";
+                return false;
+            }
+            nextTick += kPollInterval;
+            const auto afterWork = std::chrono::steady_clock::now();
+            if (afterWork >= nextTick) {
+                nextTick = afterWork;
+            } else {
+                std::this_thread::sleep_until(nextTick);
+            }
+        }
+        return std::nullopt;
+    };
+
+    const auto printRawSnapshot = [&](const RawAxisSnapshot& snapshot) {
+        std::cout << "  -> Stable raw values:";
+        for (std::uint8_t i = 0; i < snapshot.count; ++i) {
+            std::cout << " " << rvwheel::dal::ToString(snapshot.samples[i].source) << "=" << snapshot.samples[i].rawValue;
+        }
+        std::cout << "\n";
+    };
+
+    const auto runStep = [&](const char* prompt, std::chrono::milliseconds minimumAcquisition,
+                             bool submitToWizard = true) -> bool {
         for (;;) {
-            if (stopRequested_.load()) {
-                return CalibrationStepOutcome::NoMovement; // Caller checks stopRequested_ separately and aborts.
-            }
-            std::cout << prompt << " Press Enter when ready...";
+            StableRawAxisSamplerConfig samplerConfig;
+            samplerConfig.minimumAcquisition = minimumAcquisition;
+            samplerConfig.stableWindow = kStableWindow;
+            samplerConfig.minimumSamples = 15;
+            samplerConfig.relativeTolerance = 0.005f;
+            samplerConfig.maximumSamples = 256;
+            StableRawAxisSampler sampler(axes, samplerConfig);
+
+            consoleInput.DiscardPendingEvents();
+            std::cout << prompt << " Press Enter when the control is in position...";
             std::cout.flush();
-            std::string line;
-            std::getline(std::cin, line);
-            if (stopRequested_.load()) {
-                return CalibrationStepOutcome::NoMovement;
+
+            CalibrationCaptureGate captureGate(kCaptureTimeout);
+            auto nextTick = std::chrono::steady_clock::now();
+            std::string lastPollError;
+
+            while (!stopRequested_.load()) {
+                window.PumpMessages();
+                const auto now = std::chrono::steady_clock::now();
+                RawAxisSnapshot snapshot{};
+                const Status pollStatus = calibratable->PollRawAxes(snapshot);
+                if (pollStatus.IsOk()) {
+                    (void)sampler.AddSample(now, snapshot);
+                } else {
+                    sampler.NotifyPollFailure();
+                    lastPollError = pollStatus.Message().empty() ? "hardware poll failed" : pollStatus.Message();
+                }
+
+                if (captureGate.StateAt(now) == CalibrationCaptureState::WaitingForConfirmation &&
+                    consoleInput.TryReadKey() == CalibrationConsoleKey::Enter) {
+                    captureGate.Arm(now);
+                    std::cout << "\n  -> Capturing a stable 500 ms window";
+                    if (minimumAcquisition.count() > 0) {
+                        std::cout << " after the initial 2.5 s warm-up";
+                    }
+                    std::cout << "; hold the control steady...\n";
+                }
+
+                if (captureGate.StateAt(now) == CalibrationCaptureState::Capturing) {
+                    const StableRawAxisResult stable = sampler.Evaluate();
+                    if (stable.IsStable()) {
+                        printRawSnapshot(stable.snapshot);
+                        if (!submitToWizard) {
+                            std::cout << "  -> Device input initialized.\n";
+                            return true;
+                        }
+                        const CalibrationStepOutcome outcome = wizard.SubmitSnapshot(stable.snapshot);
+                        switch (outcome) {
+                            case CalibrationStepOutcome::Recorded:
+                                std::cout << "  -> Recorded.\n";
+                                return true;
+                            case CalibrationStepOutcome::BaselineChanged:
+                                std::cout << "  -> The resting input changed after the previous capture. The baseline was "
+                                             "refreshed; keep every control released/centered and confirm again.\n";
+                                break;
+                            case CalibrationStepOutcome::Ambiguous:
+                                std::cout << "  -> More than one axis really moved; move ONLY the requested control and try again.\n";
+                                break;
+                            case CalibrationStepOutcome::NoMovement:
+                                std::cout << "  -> No axis moved enough; move the requested control through its full range and try again.\n";
+                                break;
+                            case CalibrationStepOutcome::Inconsistent:
+                                std::cout << "  -> A different axis moved than in the previous step; use the same control and try again.\n";
+                                break;
+                        }
+                        break; // Retry with a fresh window; never reuse contaminated samples.
+                    }
+
+                    if (stable.status == StableRawAxisStatus::DegenerateRange ||
+                        stable.status == StableRawAxisStatus::InvalidConfiguration) {
+                        std::cerr << "\nCalibration cannot continue: " << stable.diagnostic << "\n";
+                        return false;
+                    }
+                } else if (captureGate.StateAt(now) == CalibrationCaptureState::TimedOut) {
+                    const StableRawAxisResult stable = sampler.Evaluate();
+                    std::cout << "  -> Timed out waiting for stable input (" << stable.diagnostic;
+                    if (!lastPollError.empty()) {
+                        std::cout << "; last poll error: " << lastPollError;
+                    }
+                    std::cout << "). Release unintended controls, hold the requested control steady, and try again.\n";
+                    break; // Retry with a fresh window.
+                }
+
+                nextTick += kPollInterval;
+                const auto afterWork = std::chrono::steady_clock::now();
+                if (afterWork >= nextTick) {
+                    nextTick = afterWork;
+                } else {
+                    std::this_thread::sleep_until(nextTick);
+                }
             }
 
-            window.PumpMessages();
-            RawAxisSnapshot snapshot{};
-            calibratable->PollRawAxes(snapshot);
-
-            const CalibrationStepOutcome outcome = wizard.SubmitSnapshot(snapshot);
-            switch (outcome) {
-                case CalibrationStepOutcome::Recorded:
-                    return outcome;
-                case CalibrationStepOutcome::Ambiguous:
-                    std::cout << "  -> More than one axis moved; move ONLY the requested control and try again.\n";
-                    break;
-                case CalibrationStepOutcome::NoMovement:
-                    std::cout << "  -> No axis moved enough; actually move the requested control and try again.\n";
-                    break;
-                case CalibrationStepOutcome::Inconsistent:
-                    std::cout << "  -> A different axis moved than in the previous step; use the same control and try again.\n";
-                    break;
+            if (stopRequested_.load()) {
+                captureGate.Cancel();
+                return false;
             }
         }
     };
@@ -421,19 +610,27 @@ int DeviceProbeApp::RunCalibrate() {
         {"Release the brake pedal fully."},
         {"Press the brake pedal FULLY and hold it."},
     };
+
+    if (!runStep("Initialize the device: turn the wheel left/right and fully press/release EVERY pedal once. Then "
+                 "center the wheel, release all pedals, and hold everything steady.",
+                 kInitialAcquisition, false)) {
+        std::cout << "\nCancelled.\n";
+        return 1;
+    }
+
     for (const auto& stepInfo : kSteps) {
-        runStep(stepInfo.prompt);
-        if (stopRequested_.load()) {
+        if (!runStep(stepInfo.prompt, std::chrono::milliseconds{0})) {
             std::cout << "\nCancelled.\n";
             return 1;
         }
     }
 
-    std::cout << "Does this device have a clutch pedal you want to calibrate? [y/N] ";
-    std::cout.flush();
-    std::string clutchAnswer;
-    std::getline(std::cin, clutchAnswer);
-    const bool wantsClutch = !clutchAnswer.empty() && (clutchAnswer.front() == 'y' || clutchAnswer.front() == 'Y');
+    const auto clutchAnswer = waitForYesNo("Does this device have a clutch pedal you want to calibrate?");
+    if (!clutchAnswer) {
+        std::cout << "\nCancelled.\n";
+        return 1;
+    }
+    const bool wantsClutch = *clutchAnswer;
     if (!wantsClutch) {
         wizard.SkipClutch();
     } else {
@@ -444,8 +641,7 @@ int DeviceProbeApp::RunCalibrate() {
             {"Press the clutch pedal FULLY and hold it."},
         };
         for (const auto& stepInfo : kClutchSteps) {
-            runStep(stepInfo.prompt);
-            if (stopRequested_.load()) {
+            if (!runStep(stepInfo.prompt, std::chrono::milliseconds{0})) {
                 std::cout << "\nCancelled.\n";
                 return 1;
             }
@@ -463,18 +659,34 @@ int DeviceProbeApp::RunCalibrate() {
         std::cout << "  " << line << "\n";
     }
 
-    std::cout << "\nSave this profile? [y/N] ";
-    std::cout.flush();
-    std::string saveAnswer;
-    std::getline(std::cin, saveAnswer);
-    if (saveAnswer.empty() || (saveAnswer.front() != 'y' && saveAnswer.front() != 'Y')) {
+    const auto saveAnswer = waitForYesNo("\nSave this profile?");
+    if (!saveAnswer) {
+        std::cout << "\nCancelled.\n";
+        return 1;
+    }
+    if (!*saveAnswer) {
         std::cout << "Not saved.\n";
         return 0;
     }
 
     DeviceProfile profile;
     profile.schemaVersion = 1;
-    if (device->Info().vendorId && device->Info().productId) {
+    std::vector<rvwheel::dal::AxisSource> discoveredSources;
+    discoveredSources.reserve(axes.size());
+    for (const auto& axis : axes) {
+        discoveredSources.push_back(axis.source);
+    }
+    const ProfileRepository existingRepository = LoadRepository(options_);
+    const auto existingResolution = ProfileResolver::Resolve(existingRepository.MergedProfiles(), device->Info(), discoveredSources);
+    const bool canOverrideExisting = existingResolution.profile &&
+                                     (existingResolution.origin == ProfileOrigin::BuiltInProfile ||
+                                      existingResolution.origin == ProfileOrigin::UserProfile);
+    if (canOverrideExisting) {
+        // Reusing the matched profileId makes the generated user profile
+        // an intentional override. A second exact-match id for the same
+        // device would make future resolution correctly report ambiguity.
+        profile.profileId = existingResolution.profile->profileId;
+    } else if (device->Info().vendorId && device->Info().productId) {
         std::ostringstream idStream;
         idStream << "generated-" << std::hex << std::setfill('0') << std::setw(4) << *device->Info().vendorId << "-"
                  << std::setw(4) << *device->Info().productId;
@@ -487,11 +699,22 @@ int DeviceProbeApp::RunCalibrate() {
     profile.match.vendorId = device->Info().vendorId;
     profile.match.productId = device->Info().productId;
     profile.layout = result.layout;
-    // The wizard does not measure a startup transient duration (that
-    // requires observing the device across a cold acquire, not a single
-    // interactive session); use the same conservative default the
-    // provisional fallback uses rather than guessing a number.
-    profile.readiness = DeviceReadinessPolicy::ConservativeDefault();
+    // Calibration observes roles/endpoints, but not a fresh process's
+    // startup behavior. Preserve verified readiness metadata when this is
+    // an override of an existing profile; otherwise use the generic safe
+    // default. A built-in activation gate is safety-critical and remains
+    // inherited even when an older user override predates that field.
+    profile.readiness = canOverrideExisting ? existingResolution.profile->readiness
+                                            : DeviceReadinessPolicy::ConservativeDefault();
+    if (canOverrideExisting) {
+        for (const auto& builtIn : existingRepository.BuiltInProfiles()) {
+            if (builtIn.profileId == profile.profileId && builtIn.readiness.requireAxisActivation) {
+                profile.readiness.requireAxisActivation = true;
+                profile.readiness.activationThreshold = builtIn.readiness.activationThreshold;
+                break;
+            }
+        }
+    }
     if (device->Info().capabilities.buttonCount > 0) {
         profile.expectedButtonCount = device->Info().capabilities.buttonCount;
     }
@@ -513,11 +736,12 @@ int DeviceProbeApp::RunCalibrate() {
 
     std::error_code existsEc;
     if (std::filesystem::exists(outputPath, existsEc) && !existsEc) {
-        std::cout << "\"" << outputPath.string() << "\" already exists. Overwrite? [y/N] ";
-        std::cout.flush();
-        std::string overwriteAnswer;
-        std::getline(std::cin, overwriteAnswer);
-        if (overwriteAnswer.empty() || (overwriteAnswer.front() != 'y' && overwriteAnswer.front() != 'Y')) {
+        const auto overwriteAnswer = waitForYesNo("\"" + outputPath.string() + "\" already exists. Overwrite?");
+        if (!overwriteAnswer) {
+            std::cout << "\nCancelled.\n";
+            return 1;
+        }
+        if (!*overwriteAnswer) {
             std::cout << "Not saved (existing file kept).\n";
             return 0;
         }

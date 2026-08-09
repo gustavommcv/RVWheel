@@ -10,6 +10,7 @@ add_library(rvwheel_device_probe_core STATIC
     JsonlFormatter.cpp
     MonitorFrameFormatter.cpp
     ProbeFormatting.cpp
+    StableRawAxisSampler.cpp
 )
 
 target_compile_features(rvwheel_device_probe_core PUBLIC cxx_std_20)

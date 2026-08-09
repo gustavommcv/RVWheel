@@ -13,14 +13,13 @@ Working and validated:
 - DirectInput device enumeration and hot-plug foundation;
 - normalized steering, pedal, button, and POV snapshots;
 - versioned JSON device profiles with exact VID/PID matching;
-- guided-calibration foundation for unknown devices;
+- guided calibration with continuous 60 Hz acquisition and stable-window sampling for unknown devices;
 - standalone `rvwheel_device_probe` for listing, monitoring, and capturing hardware input;
-- 115 unit tests passing in Debug and Release at the latest local validation;
+- 128 unit tests passing in Debug and Release at the latest local validation;
 - Logitech G923 (`046D:C266`) detected on real hardware with 25 buttons, one POV, three pedal axes, steering, and reported FFB capability.
 
 Still required before this is an installable mod:
 
-- finish reliable pedal baseline/readiness behavior on the G923 and validate the generated profile;
 - collect verified profiles for additional Logitech, Moza, Thrustmaster, Fanatec, and generic DirectInput devices;
 - implement the input mapper and user-facing profile controls;
 - implement UE4SS/game hooks for vehicle input;
@@ -100,6 +99,7 @@ After a Release build:
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --help
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --profiles
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --list
+.\build\tools\device_probe\Release\rvwheel_device_probe.exe --calibrate
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --monitor --duration 30 --rate 60
 .\build\tools\device_probe\Release\rvwheel_device_probe.exe --capture wheel-capture.jsonl --duration 30 --rate 60
 ```

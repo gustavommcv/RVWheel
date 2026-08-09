@@ -43,7 +43,9 @@ constexpr const char* kG923Json = R"json({
   "readiness": {
     "minimumWarmupMilliseconds": 2200,
     "stableSampleMilliseconds": 250,
-    "maximumWaitMilliseconds": 5000
+    "maximumWaitMilliseconds": 5000,
+    "requireAxisActivation": true,
+    "activationThreshold": 0.05
   },
   "sanityChecks": { "expectedButtonCount": 25, "expectedPovCount": 1 }
 })json";
@@ -80,6 +82,8 @@ TEST_CASE("ProfileLoader: parses the verified G923 profile completely", "[Profil
     REQUIRE(profile.readiness.minimumWarmup == std::chrono::milliseconds{2200});
     REQUIRE(profile.readiness.stableSample == std::chrono::milliseconds{250});
     REQUIRE(profile.readiness.maximumWait == std::chrono::milliseconds{5000});
+    REQUIRE(profile.readiness.requireAxisActivation);
+    REQUIRE(profile.readiness.activationThreshold == Catch::Approx(0.05f));
 
     REQUIRE(profile.expectedButtonCount == std::uint16_t{25});
     REQUIRE(profile.expectedPovCount == std::uint8_t{1});
@@ -99,6 +103,8 @@ TEST_CASE("ProfileLoader: Serialize then ParseFromString round-trips the G923 pr
     REQUIRE(reparsed.profile->layout.throttle->source == parsed.profile->layout.throttle->source);
     REQUIRE(reparsed.profile->layout.throttle->direction == parsed.profile->layout.throttle->direction);
     REQUIRE(reparsed.profile->readiness.minimumWarmup == parsed.profile->readiness.minimumWarmup);
+    REQUIRE(reparsed.profile->readiness.requireAxisActivation);
+    REQUIRE(reparsed.profile->readiness.activationThreshold == Catch::Approx(0.05f));
 }
 
 TEST_CASE("ProfileLoader: G923 pedal calibration matches the documented direction semantics", "[ProfileLoader][G923][AxisNormalizer]") {
@@ -215,6 +221,26 @@ TEST_CASE("ProfileLoader: a readiness time above the documented bound is rejecte
         "readiness": {"minimumWarmupMilliseconds":0,"stableSampleMilliseconds":0,"maximumWaitMilliseconds":999999}
     })");
     REQUIRE_FALSE(result.IsOk());
+}
+
+TEST_CASE("ProfileLoader: activation readiness fields are strictly typed and bounded", "[ProfileLoader][Invalid]") {
+    const auto wrongType = ProfileLoader::ParseFromString(R"({
+        "schemaVersion":1,"profileId":"x","match":{"backend":"DirectInput"},
+        "readiness": {
+          "minimumWarmupMilliseconds":0,"stableSampleMilliseconds":0,"maximumWaitMilliseconds":1000,
+          "requireAxisActivation":"yes","activationThreshold":0.05
+        }
+    })");
+    REQUIRE_FALSE(wrongType.IsOk());
+
+    const auto invalidThreshold = ProfileLoader::ParseFromString(R"({
+        "schemaVersion":1,"profileId":"x","match":{"backend":"DirectInput"},
+        "readiness": {
+          "minimumWarmupMilliseconds":0,"stableSampleMilliseconds":0,"maximumWaitMilliseconds":1000,
+          "requireAxisActivation":true,"activationThreshold":0.0
+        }
+    })");
+    REQUIRE_FALSE(invalidThreshold.IsOk());
 }
 
 TEST_CASE("ProfileLoader: omitting readiness entirely uses a conservative default, not zero", "[ProfileLoader]") {

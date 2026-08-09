@@ -26,6 +26,8 @@ enum class CalibrationStepKind {
 
 enum class CalibrationStepOutcome {
     Recorded,   // Snapshot accepted; CurrentStep() has advanced.
+    BaselineChanged, // Rest/center changed since the baseline; baseline was
+                     // refreshed and the current step must be confirmed again.
     Ambiguous,  // More than one axis moved above threshold; retry the same step.
     NoMovement, // No axis moved above threshold; retry the same step.
     Inconsistent, // A cross-check step (SteeringRight) detected movement on a
