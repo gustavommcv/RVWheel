@@ -147,29 +147,43 @@ presented in-session):
   — it hooks one specific `TickInputs` UFunction and reads a small, fixed
   set of already-known properties (`SteeringInput`, `CurrentGear`,
   `GearInput`, `Gears`), rather than scanning.
-- **What vehicle data is actually confirmed reachable today**: exactly the
+- **What vehicle data is confirmed reachable today**: the input-side
   properties `mods/RVWheel/Scripts/main.lua` and
   [`UE4SS_FIRST_TEST.md`](../game-integration/UE4SS_FIRST_TEST.md) already
-  use/list: `SteeringInput`, `LocalSteeringInput`, `Steering`,
-  `ThrottleInput`, `BrakeInput`, `CurrentGear`, `GearInput`, `Gears` (array),
-  plus the setter functions and RPCs listed there. **Speed, wheel load,
-  suspension travel, lateral slip, and surface/collision data have never
-  been queried or confirmed accessible in this game** — the one F9
-  reflection pass performed to date was explicitly scoped to "input-related
-  functions and properties" only (`UE4SS_FIRST_TEST.md`, Controls section).
+  use/list (`SteeringInput`, `LocalSteeringInput`, `Steering`,
+  `ThrottleInput`, `BrakeInput`, `CurrentGear`, `GearInput`, `Gears`), **plus**,
+  as of a targeted in-game discovery pass (F10/F11 in `RVWheelDiscovery`, see
+  [`AVS_TELEMETRY_DISCOVERY.md`](../game-integration/AVS_TELEMETRY_DISCOVERY.md)
+  for the full capture): the possessed vehicle's `GetVelocity()`,
+  `GetActorForwardVector()`, and `GetActorRightVector()` (plain `AActor`
+  functions, no reflection needed) yield speed and a forward/lateral
+  velocity decomposition that produced physically sensible numbers stopped,
+  driving straight, and turning. A separate, one-time reflection pass
+  (`AVS_Vehicle_C` and its class chain, plus one level into its four wheel
+  components) also found named properties for RPM, wheel slip, an
+  AVS-computed speed (`AirSpeed`, `VehicleSpeedFromWheelRotation`),
+  steering-recenter tuning, per-wheel state (`IsWheelInAir`,
+  `RotationSpeed`, `WheelTorque`, surface/impact fields), and a
+  `ReplicatedMovement` struct property that is a `AActor`-standard
+  `FRepMovement` (which normally carries an angular-velocity field, not
+  itself read in this pass). **Yaw rate specifically is not yet confirmed**:
+  the direct call this pass tried (`GetActorRotation()`) did not return a
+  usable value — see the discovery doc for the exact symptom, without
+  attributing a cause here. Per-wheel load and suspension *compression* are
+  still not directly confirmed (only wheel-level properties reachable one
+  level into the reflection pass were logged; whatever `WheelController`
+  exposes was not explored, by design).
 - The vehicle's actual physics implementation is the marketplace "Advanced
   Vehicle System" (AVS) plugin
   (`/VehicleSystemPlugin/AVS_Vehicle.AVS_Vehicle_C`). Public search results
   describe AVS at a marketing level (modular wheels, suspension simulation,
   arcade-style torque) but did not surface a public per-property API
-  reference (speed/velocity/suspension property names) that could be cited
-  as confirmed without an in-game check. — [Advanced Vehicle System — Fab listing](https://www.unrealengine.com/marketplace/en-US/product/advanced-vehicle-system)
-- **This is the single largest open question for Strategy B**, and it is
-  explicitly *not* resolved by this research pass, because resolving it
-  requires a new, scoped reflection probe against the running game — which
-  this task's safety rules (no aggressive reflection during gameplay, and
-  no live-game session without authorization in this working session)
-  correctly prevented from happening today. See §6.
+  reference; the property names above come from the in-game discovery pass
+  itself, not from AVS's own public documentation. — [Advanced Vehicle System — Fab listing](https://www.unrealengine.com/marketplace/en-US/product/advanced-vehicle-system)
+- **This was the single largest open question for Strategy B. Speed and
+  lateral velocity are now confirmed reachable; yaw rate is not yet.** See
+  [`AVS_TELEMETRY_DISCOVERY.md`](../game-integration/AVS_TELEMETRY_DISCOVERY.md)
+  for the full capture and §7 below for what remains open.
 
 ## 5. Prior art for telemetry/memory-derived FFB in games without native support
 
@@ -196,7 +210,7 @@ presented in-session):
 | | Fidelity | Risk | Maintenance | Game-version coupling | Latency | Testability | Wheel compatibility |
 |---|---|---|---|---|---|---|---|
 | **A. Capture game-produced FFB** | Low (wrong data shape — vibration channels, not torque) | High (depends on an undocumented interception point) | High (no stable API to target) | Very high | N/A (blocked) | Low | N/A |
-| **B. Compute FFB from vehicle telemetry** | Potentially high, but **unverified today** — only steering/gear confirmed reachable | Medium (reflection-heavy queries repeated last session's instability if not scoped/cached) | Medium | Medium (depends on AVS's own property names) | Low if properties are cheap to read | High (once real values are known, math is pure/testable) | High (backend-agnostic once computed) |
+| **B. Compute FFB from vehicle telemetry** | Speed/lateral velocity now confirmed reachable via plain `AActor` calls (no reflection); yaw rate not yet confirmed | Low for the confirmed speed/lateral path (no reflection, no per-tick scanning); Medium for anything still requiring reflection | Medium | Medium (depends on AVS's own property names) | Low (plain function calls, no reflection) | High (once real values are known, math is pure/testable) | High (backend-agnostic once computed) |
 | **C. Hybrid (profile-driven spring/damper baseline + telemetry-derived SAT later)** | Medium now, can grow to high | Low for the baseline; Medium for the SAT half until B is verified | Low for the baseline | Low for the baseline; Medium for the SAT half | Low | High | High |
 
 **Recommendation: Strategy C, but the two halves are not equally ready.**
@@ -218,11 +232,15 @@ Strategy A is rejected outright per §2 — not a close call.
 
 1. **Does AVS_Vehicle_C (or a component on it) expose speed, lateral
    velocity, per-wheel load, or suspension compression as a Lua-readable
-   property?** Requires a scoped, snapshot-style reflection probe against
-   the running game (similar to the existing `RVWheelDiscovery` F8/F9 mod,
-   but targeted specifically at physics/telemetry properties, and run only
-   once, not per-tick) — **not performed in this session**; needs its own
-   explicit go-ahead since it requires the game running.
+   property?** **Partially answered** by a scoped, one-time discovery pass
+   (`RVWheelDiscovery` F10/F11, see
+   [`AVS_TELEMETRY_DISCOVERY.md`](../game-integration/AVS_TELEMETRY_DISCOVERY.md)):
+   speed and lateral velocity are confirmed reachable via plain `AActor`
+   calls, no reflection required. Yaw rate, per-wheel load, and suspension
+   compression are still not directly confirmed -- the discovery doc lists
+   the specific candidate properties found (e.g. `ReplicatedMovement`,
+   wheel-level fields) without claiming any of them has been read or
+   verified to work.
 2. **Does the G923 actually grant `DISCL_EXCLUSIVE` cleanly while G HUB is
    running, and does input polling continue to work for RVWheel's own
    bridge while exclusive?** Documented behavior says nonexclusive readers

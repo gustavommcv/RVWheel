@@ -193,7 +193,10 @@ reviewed findings belong under `docs/hardware/`.
 
 For the manually validated UE4SS installation and current limitations, see
 [the first in-game test](docs/game-integration/UE4SS_FIRST_TEST.md) and the
-[bridge README](mods/RVWheel/README.md).
+[bridge README](mods/RVWheel/README.md). For what vehicle telemetry has
+actually been confirmed reachable (speed, lateral velocity; yaw rate not
+yet), see
+[AVS_TELEMETRY_DISCOVERY.md](docs/game-integration/AVS_TELEMETRY_DISCOVERY.md).
 
 ## Device profiles
 
