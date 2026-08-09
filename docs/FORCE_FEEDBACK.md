@@ -1,15 +1,18 @@
 # Force Feedback
 
 > [!IMPORTANT]
-> Force feedback is **not validated on real hardware**. Three gated tests
-> against a real G923 (2026-08-09) passed Step 4 (stop-only) cleanly. Step
-> 6 (a weak spring) reproduced the same failure three times: a real ramp-up
-> bug in this project's own code (now fixed) on the first run, then, on all
-> three runs (including with Logitech G HUB's device-management process
-> terminated), `DIERR_NOTEXCLUSIVEACQUIRED` after ~2 seconds -- the
-> device's exclusive acquisition gets downgraded for a reason that is
-> **not** G HUB (ruled out) and still unidentified. **No unsafe motion was
-> reported in any run.** See the **Incident log** in
+> Force feedback is **not validated on real hardware**. Five gated tests
+> against a real G923 (2026-08-09) passed Step 4 (stop-only) cleanly. Every
+> weak spring/damper attempt (Steps 6/7) reproduced the same
+> `DIERR_NOTEXCLUSIVEACQUIRED` failure after ~2 seconds, with G HUB and this
+> project's own input-reacquire logic both ruled out as the cause. A weak
+> damper run additionally showed the wheel's own *pre-existing* ambient
+> force feedback behavior (independent of any PC software) temporarily
+> weaken while this project held exclusive access, then return once the
+> failure hit -- current working hypothesis is a firmware/driver-level
+> watchdog on the wheel itself, unconfirmed but reassuring if true (a
+> hardware safety net on top of this project's software one). **No unsafe
+> motion was reported in any of the five runs.** See the **Incident log** in
 > [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md) and
 > [docs/research/FORCE_FEEDBACK_FEASIBILITY.md](research/FORCE_FEEDBACK_FEASIBILITY.md)
 > before doing anything else with real hardware. Do not enable

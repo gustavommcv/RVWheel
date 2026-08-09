@@ -151,17 +151,50 @@ and was left running). Same command, same device. The `0x80040205` /
 G HUB's main device-management process not running. **Logitech G HUB is
 not the (sole) cause of the exclusive-acquisition downgrade.**
 
-Remaining candidate causes, none confirmed: (a) `DirectInputDevice::Poll()`'s
+Remaining candidate causes at this point: (a) `DirectInputDevice::Poll()`'s
 own `DIERR_INPUTLOST`/`DIERR_NOTACQUIRED` recovery path re-acquiring the
-device without exclusive flags being what actually changes, even though
-`Acquire()` should reuse whatever cooperative level `SetCooperativeLevel`
-last set; (b) a Windows-level or driver-level timeout specific to holding
-exclusive force-feedback access without some form of periodic
-confirmation; (c) `lghub_updater.exe` (left running) or another background
-process/service still touching the device. Diagnosing further needs
-instrumentation this project does not have yet (e.g. logging exactly when
-`Poll()`'s own reacquire path fires, or a USB/HID trace), not another
-manual run with the same test. No unsafe motion was reported in this run.
+device without exclusive flags being what actually changes; (b) a
+Windows-level or driver-level timeout specific to holding exclusive
+force-feedback access without some form of periodic confirmation; (c)
+`lghub_updater.exe` (left running) or another background process/service
+still touching the device. No unsafe motion was reported in this run.
+
+**2026-08-09 — Step 6 retest #4 (weak spring, gain raised to 0.2, with
+`Poll()`-reacquire diagnostic logging): hypothesis (a) ruled out.** Same
+command, gain/strength raised from 0.1 to 0.2 (still far below the safety
+controller's 0.6 ceiling) after three prior runs at 0.1 showed no unsafe
+motion. Zero "Input poll lost" diagnostic lines appeared during the run --
+`GetDeviceState` never failed -- yet `SetParameters` still failed with the
+same `DIERR_NOTEXCLUSIVEACQUIRED` at the same elapsed time. **This
+project's own input-polling reacquire logic is not the cause**: the
+exclusive FFB lock is being dropped independently of any input-read
+failure ever occurring.
+
+**2026-08-09 — Step 7 (weak damper, gain 0.2): new finding, working
+hypothesis revised.** The operator reported that the wheel's own baseline
+resistance (present even with no RVWheel code running at all, and
+independent of G HUB, which was still closed) was felt to *decrease* for
+about one second while the effect was active, then return once the
+`DIERR_NOTEXCLUSIVEACQUIRED` failure hit. `DIPROP_FFGAIN`
+(`DirectInputDevice::ApplyGain`) is a **device-wide** property -- it scales
+every active force on the device, not only effects this project created.
+This is consistent with the G923 (or its driver) already running some
+ambient/default force feedback behavior independent of any PC software,
+which this project's low test gain temporarily suppressed while exclusive
+access lasted.
+
+**Revised working hypothesis (not confirmed): the G923 may have a
+firmware- or driver-level watchdog that reclaims the device's own default
+force feedback behavior, including exclusive access, if no application
+"renews" FFB activity within roughly two seconds.** This would explain the
+timing, the `DIERR_NOTEXCLUSIVEACQUIRED` failure, and the ambient-effect
+observation together, and -- if true -- is reassuring rather than
+concerning: it would mean the hardware has its own independent safety
+fallback on top of this project's software safety controller. This has not
+been confirmed against official documentation (none was found describing
+G923 firmware behavior at this level) and would require USB/HID-level
+tracing to verify. Diagnosing further is not currently planned; see the
+main text above for what would be needed.
 
 ## Recording results
 
