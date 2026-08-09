@@ -1,4 +1,8 @@
-# CMake build trees and generated files
+# CMake build trees and generated files.
+# Any root-level "build-<name>/" directory is treated as a disposable CMake
+# tree. Do not use this prefix for cloned reference material that isn't an
+# actual build output -- it will be silently ignored and can look disposable
+# when it is not.
 /build*/
 /out/
 CMakeCache.txt
