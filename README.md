@@ -1,5 +1,7 @@
 # RVWheel
 
+[![CI](https://github.com/gustavommcv/RVWheel/actions/workflows/ci.yml/badge.svg)](https://github.com/gustavommcv/RVWheel/actions/workflows/ci.yml)
+
 RVWheel is an open-source project to add racing-wheel support to *RV There Yet?* through UE4SS, without modifying the game executable.
 
 > [!IMPORTANT]
@@ -32,6 +34,15 @@ Still required before this is a polished installable mod:
 - validate force feedback safely on real hardware.
 
 See [the G923 hardware baseline](docs/hardware/G923_DIRECTINPUT_CAPTURE.md) for measured behavior and unresolved findings.
+
+## Documentation
+
+- [docs/INSTALL.md](docs/INSTALL.md) — install and play, if you are not building from source.
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — Windows dev environment setup, build, and test.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the layers fit together, the RVW2 protocol, and design decisions.
+- [docs/ADDING_A_WHEEL.md](docs/ADDING_A_WHEEL.md) — capture, calibrate, and ship a profile for a new device.
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common problems and what they mean.
+- [docs/RELEASING.md](docs/RELEASING.md) — building the distributable package.
 
 ## Architecture
 
@@ -99,6 +110,10 @@ The main build products are:
 - `rvwheel_profiles.lib` — static profile-system library;
 - `rvwheel_device_probe.exe` — standalone developer diagnostic tool and bridge host;
 - `rvwheel_launcher.exe` — native one-click game launcher.
+
+To build the player-facing distribution ZIP (launcher, probe, mod, default
+profiles, README, license — no dev artifacts), run `cpack -C Release -G ZIP`
+from `build/` after a Release build. See [docs/RELEASING.md](docs/RELEASING.md).
 
 ## One-click launcher
 
