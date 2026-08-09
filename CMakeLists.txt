@@ -37,6 +37,7 @@ option(RVWHEEL_BUILD_TESTS "Build RVWheel unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(RVWHEEL_BUILD_TOOLS "Build RVWheel developer tools (device_probe, etc.)" ${PROJECT_IS_TOP_LEVEL})
 
 add_subdirectory(src)
+add_subdirectory(src/ForceFeedback)
 add_subdirectory(src/Profiles)
 
 # Tools before tests: tests/unit conditionally links against

@@ -33,10 +33,15 @@ add_executable(rvwheel_dal_tests
     AxisSourceTests.cpp
     DeviceManagerTests.cpp
     DeviceReadinessTests.cpp
+    ForceFeedbackEngineTests.cpp
+    ForceFeedbackMixerTests.cpp
+    ForceFeedbackProfileTests.cpp
+    ForceFeedbackSafetyControllerTests.cpp
     LogitechDeviceTests.cpp
     ProfileLoaderTests.cpp
     ProfileRepositoryTests.cpp
     ProfileResolverTests.cpp
+    SpringDamperSourceTests.cpp
     Win32HeaderSmokeTest.cpp
     ${_rvwheel_probe_test_sources}
     ${_rvwheel_launcher_test_sources}
@@ -44,10 +49,11 @@ add_executable(rvwheel_dal_tests
 
 target_include_directories(rvwheel_dal_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(rvwheel_dal_tests PRIVATE cxx_std_20)
-# rvwheel::profiles (unlike rvwheel_device_probe_core) is always built --
-# see the top-level CMakeLists.txt's unconditional add_subdirectory(src/Profiles)
-# -- so profile system tests link it directly rather than through the tool.
-target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel::dal rvwheel::profiles Catch2::Catch2WithMain)
+# rvwheel::profiles/rvwheel::ffb (unlike rvwheel_device_probe_core) are
+# always built -- see the top-level CMakeLists.txt's unconditional
+# add_subdirectory(src/Profiles) / add_subdirectory(src/ForceFeedback) --
+# so their tests link directly rather than through the tool.
+target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel::dal rvwheel::profiles rvwheel::ffb Catch2::Catch2WithMain)
 
 if(TARGET rvwheel_device_probe_core)
     target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel_device_probe_core)
