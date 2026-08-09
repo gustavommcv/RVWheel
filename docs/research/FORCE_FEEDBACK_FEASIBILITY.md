@@ -264,14 +264,17 @@ new open question:
    partway through, at a similar elapsed time in both runs, independent of
    the unrequested-extra-effects bug (which was already fixed for the
    second run, ruling out hypothesis (c) below). **What remains open is
-   *why* the acquisition is downgraded.** Leading hypothesis: Logitech
-   G HUB (confirmed installed and presumably running on the test machine)
-   renegotiates access to the device on its own schedule and, in doing so,
-   causes this project's exclusive acquisition to be replaced with a
-   nonexclusive one. Not yet tested with G HUB closed. Hypothesis (a) --
-   `DirectInputDevice::Poll()`'s own reacquire-on-input-loss path
-   contributing -- is also not ruled out, since input polling continued
-   throughout both runs.
+   *why* the acquisition is downgraded -- and Logitech G HUB, the leading
+   hypothesis, has since been ruled out**: a third run with
+   `lghub_agent.exe`/`lghub_system_tray.exe` terminated reproduced the
+   identical failure at the identical elapsed time. Remaining candidates,
+   none confirmed: (a) `DirectInputDevice::Poll()`'s own
+   reacquire-on-input-loss path; (b) a Windows/driver-level timeout on held
+   exclusive FFB access without periodic confirmation; (c)
+   `lghub_updater.exe` (a background updater that could not be terminated)
+   or another process. Diagnosing further needs instrumentation (e.g.
+   logging exactly when `Poll()`'s reacquire path fires) rather than
+   another plain manual run.
 
 ## Risks carried forward into implementation
 

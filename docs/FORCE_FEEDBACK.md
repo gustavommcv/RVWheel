@@ -1,16 +1,17 @@
 # Force Feedback
 
 > [!IMPORTANT]
-> Force feedback is **not validated on real hardware**. Two gated tests
+> Force feedback is **not validated on real hardware**. Three gated tests
 > against a real G923 (2026-08-09) passed Step 4 (stop-only) cleanly. Step
-> 6 (a weak spring) reproduced the same failure twice: a real ramp-up bug
-> in this project's own code (now fixed) on the first run, then, on both
-> runs, `DIERR_NOTEXCLUSIVEACQUIRED` after ~2 seconds -- the device's
-> exclusive acquisition gets downgraded, most likely by Logitech G HUB
-> renegotiating access, though this is not yet confirmed by testing with
-> G HUB closed. **No unsafe motion was reported in either run.** See the
-> **Incident log** in [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md)
-> and [docs/research/FORCE_FEEDBACK_FEASIBILITY.md](research/FORCE_FEEDBACK_FEASIBILITY.md)
+> 6 (a weak spring) reproduced the same failure three times: a real ramp-up
+> bug in this project's own code (now fixed) on the first run, then, on all
+> three runs (including with Logitech G HUB's device-management process
+> terminated), `DIERR_NOTEXCLUSIVEACQUIRED` after ~2 seconds -- the
+> device's exclusive acquisition gets downgraded for a reason that is
+> **not** G HUB (ruled out) and still unidentified. **No unsafe motion was
+> reported in any run.** See the **Incident log** in
+> [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md) and
+> [docs/research/FORCE_FEEDBACK_FEASIBILITY.md](research/FORCE_FEEDBACK_FEASIBILITY.md)
 > before doing anything else with real hardware. Do not enable
 > `forceFeedback.enabled` in a profile expecting a finished feature.
 
@@ -18,7 +19,7 @@
 
 | Piece | Status |
 |---|---|
-| DirectInput effect creation/update/stop (`CreateEffect`, `SetParameters`, `Stop`, `SendForceFeedbackCommand`) | Implemented; a real spring effect ran correctly for ~2s, then `SetParameters`/`Stop` reproducibly fail with `DIERR_NOTEXCLUSIVEACQUIRED` (see Incident log) -- root cause of the acquisition downgrade itself still open |
+| DirectInput effect creation/update/stop (`CreateEffect`, `SetParameters`, `Stop`, `SendForceFeedbackCommand`) | Implemented; a real spring effect ran correctly for ~2s, then `SetParameters`/`Stop` reproducibly fail with `DIERR_NOTEXCLUSIVEACQUIRED` in all 3 runs, G HUB ruled out as the cause (see Incident log) |
 | Capability detection (`DIDC_FORCEFEEDBACK`) | Implemented and confirmed working against a real G923 (read-only) |
 | Exclusive FFB acquisition | Confirmed working on a real G923 without breaking input polling (hardware test Step 4) |
 | Safety controller (clamps, watchdog, slew rate, fault handling) | Implemented, unit-tested (37+ tests); a real gain-ramp overshoot bug was found and fixed after the first real activation |

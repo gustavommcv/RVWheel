@@ -143,16 +143,25 @@ exclusivity is lost, this project's software-level stop calls cannot
 succeed either. **No unsafe motion was reported after this run either**;
 the wheel returned to G HUB's own idle behavior.
 
-**Working hypothesis (not yet confirmed): Logitech G HUB is renegotiating
-access to the device a few seconds after this project acquires it
-exclusively, downgrading our acquisition to nonexclusive.** This is
-consistent with both runs failing at a similar elapsed time, and with G HUB's
-own idle behavior being what the operator observed afterward in both cases
--- plausible if G HUB manages the device's FFB state through a path other
-than pure DirectInput and reasserts it once it regains any level of access.
-This has not been tested by closing G HUB first; that is the next useful,
-low-risk diagnostic (does not require applying force) before any further
-weak-effect attempt.
+**2026-08-09 — Step 6 retest #3 (weak spring, G HUB closed): G HUB
+hypothesis disproven.** `lghub_agent.exe` and `lghub_system_tray.exe` were
+terminated (`lghub_updater.exe`, a background update checker, could not be
+and was left running). Same command, same device. The `0x80040205` /
+`DIERR_NOTEXCLUSIVEACQUIRED` failure recurred at the same elapsed time with
+G HUB's main device-management process not running. **Logitech G HUB is
+not the (sole) cause of the exclusive-acquisition downgrade.**
+
+Remaining candidate causes, none confirmed: (a) `DirectInputDevice::Poll()`'s
+own `DIERR_INPUTLOST`/`DIERR_NOTACQUIRED` recovery path re-acquiring the
+device without exclusive flags being what actually changes, even though
+`Acquire()` should reuse whatever cooperative level `SetCooperativeLevel`
+last set; (b) a Windows-level or driver-level timeout specific to holding
+exclusive force-feedback access without some form of periodic
+confirmation; (c) `lghub_updater.exe` (left running) or another background
+process/service still touching the device. Diagnosing further needs
+instrumentation this project does not have yet (e.g. logging exactly when
+`Poll()`'s own reacquire path fires, or a USB/HID trace), not another
+manual run with the same test. No unsafe motion was reported in this run.
 
 ## Recording results
 
