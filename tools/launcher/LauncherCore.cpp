@@ -137,8 +137,8 @@ std::vector<std::filesystem::path> BridgeExecutableCandidates(const std::filesys
     const auto configName = launcherDirectory.filename();
     const auto toolsBuildDirectory = launcherDirectory.parent_path().parent_path();
     return {
-        launcherDirectory / L"rvwheel_device_probe.exe",
-        toolsBuildDirectory / L"device_probe" / configName / L"rvwheel_device_probe.exe",
+        launcherDirectory / kBridgeExecutableFileName,
+        toolsBuildDirectory / L"device_probe" / configName / kBridgeExecutableFileName,
     };
 }
 

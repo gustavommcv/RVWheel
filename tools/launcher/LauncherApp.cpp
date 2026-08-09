@@ -23,8 +23,11 @@ namespace rvwheel::tools::launcher {
 namespace {
 
 constexpr wchar_t kGameProcessName[] = L"Ride-Win64-Shipping.exe";
-constexpr wchar_t kBridgeProcessName[] = L"rvwheel_device_probe.exe";
+constexpr wchar_t kModName[] = L"RVWheel";
+constexpr char kModNameNarrow[] = "RVWheel"; // Same name as kModName; mods.txt is narrow text.
 constexpr wchar_t kSteamLaunchUri[] = L"steam://rungameid/3949040";
+constexpr int kBridgeRateHz = 60; // Matches CliParser::kDefaultRateHz; passed explicitly so a
+                                   // future change to either default cannot silently desync them.
 
 class UniqueHandle {
 public:
@@ -212,8 +215,8 @@ private:
         return false;
     }
 
-    const auto bundledMod = launcherDirectory / L"RVWheel";
-    const auto installedMod = gameWin64 / L"ue4ss" / L"Mods" / L"RVWheel";
+    const auto bundledMod = launcherDirectory / kModName;
+    const auto installedMod = gameWin64 / L"ue4ss" / L"Mods" / kModName;
     if (!CopyDirectoryContents(bundledMod, installedMod)) {
         errorMessage = L"Não foi possível copiar o mod RVWheel para a pasta do UE4SS.";
         return false;
@@ -221,7 +224,7 @@ private:
 
     const auto modsList = gameWin64 / L"ue4ss" / L"Mods" / L"mods.txt";
     const std::string current = ReadBytes(modsList).value_or(std::string{});
-    if (!WriteBytesAtomically(modsList, EnableUe4ssMod(current, "RVWheel"))) {
+    if (!WriteBytesAtomically(modsList, EnableUe4ssMod(current, kModNameNarrow))) {
         errorMessage = L"Não foi possível habilitar RVWheel em ue4ss/Mods/mods.txt.";
         return false;
     }
@@ -299,7 +302,8 @@ private:
         return {};
     }
 
-    std::wstring commandLine = L"\"" + bridge.wstring() + L"\" --bridge --rate 60 --parent-pid " +
+    std::wstring commandLine = L"\"" + bridge.wstring() + L"\" --bridge --rate " +
+                               std::to_wstring(kBridgeRateHz) + L" --parent-pid " +
                                std::to_wstring(GetCurrentProcessId());
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
@@ -353,7 +357,7 @@ int RunLauncher() {
     }
 
     UniqueHandle launchedBridge;
-    if (FindProcessId(kBridgeProcessName) == 0) {
+    if (FindProcessId(kBridgeExecutableFileName) == 0) {
         launchedBridge = StartBridge(launcherExecutable, errorMessage);
         if (!launchedBridge) {
             ShowError(errorMessage);

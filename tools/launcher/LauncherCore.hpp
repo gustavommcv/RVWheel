@@ -7,6 +7,11 @@
 
 namespace rvwheel::tools::launcher {
 
+// Single source of truth for the bridge executable's file name, shared by
+// BridgeExecutableCandidates below and by LauncherApp's process lookup so
+// the two never drift apart.
+inline constexpr wchar_t kBridgeExecutableFileName[] = L"rvwheel_device_probe.exe";
+
 // Parses every "path" entry in Steam's libraryfolders.vdf. The default
 // Steam root is always returned first, even when the VDF is missing it.
 [[nodiscard]] std::vector<std::filesystem::path> ParseSteamLibraryRoots(
