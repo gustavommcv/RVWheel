@@ -35,3 +35,4 @@ add_custom_command(TARGET rvwheel_launcher POST_BUILD
 install(TARGETS rvwheel_launcher rvwheel_device_probe RUNTIME DESTINATION .)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/mods/RVWheel DESTINATION .)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/configs/default_profiles DESTINATION configs)
+install(FILES ${PROJECT_SOURCE_DIR}/README.md ${PROJECT_SOURCE_DIR}/LICENSE DESTINATION .)

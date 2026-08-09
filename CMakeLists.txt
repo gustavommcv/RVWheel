@@ -52,3 +52,19 @@ if(RVWHEEL_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/unit)
 endif()
+
+# Player-facing distribution package (launcher, bridge, mod, default
+# profiles, README, license). Contents are controlled entirely by the
+# install() rules in tools/launcher/CMakeLists.txt -- no .lib/.pdb/sources
+# are installed anywhere, so none end up in the package. Run with
+# `cmake --build build --target package` after a Release build; see
+# docs/RELEASING.md.
+if(RVWHEEL_BUILD_TOOLS)
+    set(CPACK_PACKAGE_NAME "RVWheel")
+    set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+    set(CPACK_PACKAGE_VENDOR "RVWheel contributors")
+    set(CPACK_PACKAGE_FILE_NAME "RVWheel-${PROJECT_VERSION}-win64")
+    set(CPACK_GENERATOR "ZIP")
+    set(CPACK_VERBATIM_VARIABLES ON)
+    include(CPack)
+endif()
