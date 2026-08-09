@@ -254,7 +254,17 @@ Status DirectInputDevice::Poll() noexcept {
     DIJOYSTATE2 raw{};
     HRESULT hr = device_->GetDeviceState(sizeof(DIJOYSTATE2), &raw);
     if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
-        if (SUCCEEDED(device_->Acquire())) {
+        // Diagnostic only (see docs/FORCE_FEEDBACK_HARDWARE_TEST.md's
+        // incident log, open question 5(a)): records exactly when input
+        // polling itself first notices the device needs reacquiring, so a
+        // real hardware run can correlate this against a force-feedback
+        // SetParameters/Stop failure elsewhere instead of guessing whether
+        // the two are related.
+        diagnostics_(LogLevel::Warning, "Input poll lost acquisition (" + FormatHresult(hr) + "); reacquiring");
+        const HRESULT acquireHr = device_->Acquire();
+        diagnostics_(LogLevel::Warning, SUCCEEDED(acquireHr) ? "Reacquired successfully"
+                                                              : "Reacquire failed: " + FormatHresult(acquireHr));
+        if (SUCCEEDED(acquireHr)) {
             hr = device_->GetDeviceState(sizeof(DIJOYSTATE2), &raw);
         }
     }

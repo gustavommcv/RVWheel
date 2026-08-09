@@ -1412,9 +1412,14 @@ int DeviceProbeApp::RunFfbHardwareTestStopOnly() {
 int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
     // Fixed, deliberately conservative constants for this one gated test --
     // not CLI-configurable on purpose, so this mode can never be pointed at
-    // a stronger effect than the hardware test procedure's step 6/7 call for.
-    constexpr float kTestGain = 0.1f;
-    constexpr float kTestStrength = 0.1f;
+    // a stronger effect than the hardware test procedure's step 6/7 call
+    // for. Raised from 0.1 to 0.2 (still far below the safety controller's
+    // own 0.6 absolute ceiling) only after three prior real-hardware runs
+    // at 0.1 reported no unsafe motion; see
+    // docs/FORCE_FEEDBACK_HARDWARE_TEST.md's incident log before raising
+    // this further.
+    constexpr float kTestGain = 0.2f;
+    constexpr float kTestStrength = 0.2f;
     constexpr auto kTestDuration = std::chrono::seconds{5};
     constexpr auto kTickInterval = std::chrono::milliseconds{16};
 
