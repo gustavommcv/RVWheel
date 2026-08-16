@@ -467,3 +467,53 @@ implementation.
 This still validates only the isolated weak-spring/damper diagnostic, not
 vehicle telemetry, gameplay integration, or the production `--bridge` loop
 actually calling `ForceFeedbackEngine::Enable()`.
+
+## Update — native autocenter control research and G923 result
+
+The G923 standstill tests established that RVWheel's own condition-effect
+coefficient reaches zero and that deleting the effect object does not remove
+the remaining centering resistance. They did not test DirectInput's separate
+device-wide autocenter property.
+
+Official sources resolve the API contract:
+
+- [`IDirectInputDevice8::SetProperty`](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee417929(v=vs.85))
+  defines `DIPROP_AUTOCENTER` for the entire device (`DIPH_DEVICE`), with
+  `DIPROPAUTOCENTER_OFF`/`ON`, says FFB applications should turn it off before
+  playing effects, and warns that not every device supports it.
+- [Device Properties](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee416595(v=vs.85))
+  states that only `DIPROP_FFGAIN` may be changed while acquired; autocenter
+  therefore requires an unacquire/configure/reacquire transition.
+- [`GetProperty`](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee417908(v=vs.85))
+  can retrieve the current OFF/ON value, allowing exact restoration instead
+  of assuming the user's prior setting was ON.
+- Microsoft's [official FFConst sample](https://github.com/walbourn/directx-sdk-samples-reworked/blob/main/DirectInput/FFConst/ffconst.cpp)
+  follows that ordering: cooperative level, AUTOCENTER=OFF, then acquisition
+  and effect playback.
+- Logitech's own support article distinguishes its
+  ["Centering Spring in Non Force Feedback Games"](https://support.logi.com/hc/en-nz/articles/15583220063255-The-force-feedback-on-my-wheel-has-changed-and-I-can-no-longer-use-the-center-spring-force-setting-in-G-HUB-to-adjust-the-strength)
+  from an FFB title taking control. This supports the conceptual separation;
+  it does not prove how this G923 responds to `DIPROP_AUTOCENTER`.
+
+The implementation uses explicit `IWheelDevice` ownership boundaries rather
+than per-frame property writes. `BeginForceFeedbackSession()` runs once when
+the bridge is actually armed, snapshots the property, requests OFF, verifies
+read-back, and reacquires. `StopForceFeedback()` remains effect-only because
+the watchdog may stop and later resume output; restoring native autocenter at
+that transient edge would recreate the standstill resistance. Final
+`EndForceFeedbackSession()` restores the exact snapshot and unacquires, with a
+destructor retry as best-effort defense. `--ffb-hw-test-autocenter` isolates
+the property for five seconds without creating an effect.
+
+On 2026-08-10 that diagnostic ran twice under `EXCLUSIVE | BACKGROUND`. Both
+runs confirmed ON -> OFF -> ON by `GetProperty`, retained readable input for
+5.01 seconds, reported `ACTUATORSOFF | EMPTY | POWERON`, and exited cleanly.
+The first had no valid physical observation because the operator missed the
+short window; during the immediately repeated run the operator reported
+absolutely no perceptible difference. This falsifies `DIPROP_AUTOCENTER` as a
+solution for the remaining standstill resistance on this G923/G HUB stack,
+despite the property being accepted and read back. It does not prove whether
+the remaining behavior belongs specifically to G HUB, the device firmware, or
+another driver layer. The standards-compliant lifecycle remains useful for
+other wheels and must be validated per model rather than generalized from the
+G923 result.

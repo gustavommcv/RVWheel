@@ -550,6 +550,260 @@ bridge instance). Vehicle telemetry (speed, terrain, collisions) is still
 entirely unimplemented; this remains a static centering spring
 regardless of what the vehicle is doing.
 
+### Speed-sensitive spring: first physical test, and native autocenter follow-up
+
+All prior entries used a static, telemetry-independent spring
+(`SpringDamperSource`). This entry covers the first hardware test of
+`SpeedSensitiveSpringSource` (opt-in via
+`forceFeedback.speedSensitiveSpring.enabled`), which scales the same
+already-validated spring by vehicle speed (RVT1 telemetry) via a
+smoothstep curve, through the same `--bridge --enable-force-feedback`
+path, with an isolated profile copy outside the repository (never
+touching the shipped built-in JSON, which still ships with
+`speedSensitiveSpring.enabled: false`) and the game opened directly via
+Steam (not the launcher, so the operator could pass a specific
+`--profile` file). Before these runs: Debug and Release both rebuilt
+clean, 291/291 tests passing in both, `git diff --check` clean.
+
+**Run 1 (20 s, `minimumScale=0.25`): no force ever applied.** The
+device's readiness policy (`requireAxisActivation`) was never satisfied
+within the run -- `"Force feedback: device readiness reached; engine
+ENABLED."` never printed, so `Enable()` was never called and the wheel
+felt unchanged throughout. A real bug was also found and fixed here,
+independent of this readiness gap: the throttled (`<=4 Hz`) adaptive
+diagnostic line never printed at all, due to
+`std::chrono::steady_clock::time_point::min()` being subtracted from
+`now()` for the "never printed yet" check, overflowing
+`steady_clock::duration`'s representable range (undefined behavior).
+Fixed by using `std::optional<time_point>` instead (the same pattern
+`RunTelemetryMonitor` already used for an analogous "never observed
+yet" case).
+
+**Run 2 (30 s, `minimumScale=0.25`): technical and physical pass.** The
+operator moved the wheel promptly; readiness was reached partway through
+and the engine enabled. The printed diagnostic tracked a full drive: spring
+≈0.05 at rest (matching `springStrength(0.2) * minimumScale(0.25)`),
+smoothly increasing with speed, `scale=1`/`spring=0.2` sustained from
+≈5.5 m/s through a peak of ≈8.1 m/s (never exceeding `springStrength`),
+and back down to ≈0.05 on deceleration -- both directions of the curve
+confirmed on real hardware, not just in unit tests. Clean, confirmed
+stop at the end. The operator reported the pattern matched what was felt,
+but raised a design objection: even the resting `minimumScale=0.25`
+spring actively pulled the wheel toward center while the vehicle was
+stationary, which does not match a real car (a parked car's wheel has
+no active centering torque, only mechanical friction).
+
+**Run 3 (30 s, `minimumScale=0.0`): curve confirmed, objection not resolved.**
+No code change was needed -- `minimumScale` is already a validated,
+configurable field, so the isolated test profile was edited to `0.0` and
+reused. The diagnostic confirmed `spring≈0` at rest (values on the order
+of `1e-5`-`1e-7`, i.e. a DirectInput coefficient of 0 after truncation)
+and the same full-strength/no-overshoot behavior at speed. The operator
+reported the wheel still returned to center at a standstill, unchanged
+from before.
+
+**Effect-retirement experiment (30 s, `minimumScale=0.0`,
+`DirectInputDevice` temporarily modified): hypothesis tested and
+disproven.** Before concluding this was a hardware characteristic, one
+remaining software-side hypothesis was tested: that an *active* DirectInput
+spring condition effect with a coefficient truncating to 0 might behave
+differently from *no effect object existing at all* on this wheelbase.
+`DirectInputDevice::ApplyConditionEffect` was temporarily changed to
+`Stop()` and release the spring/damper effect entirely below a
+`0.001`-normalized-strength threshold, recreating it once strength rose
+back above that threshold (previously: created once, then always updated
+in place via `SetParameters`, never released until session end). Debug
+and Release rebuilt clean, 291/291 tests unaffected (this backend has no
+hardware-independent coverage either way -- see below). The operator
+drove near-standstill for the whole run (`springRequested`/`springApplied`
+stayed below the retirement threshold throughout, so the spring effect
+was destroyed for nearly the entire 30 s) and actively turned the wheel
+to check: **no difference from the wheel's standard behavior was felt.**
+The change was reverted immediately after (`git checkout --` on
+`DirectInputDevice.cpp`/`.hpp`) since it added a new effect-lifecycle
+path (destroy/recreate, distinct from "create once, then update in
+place") without any confirmed benefit.
+
+**Narrow conclusion from those runs:** the resting resistance is not produced
+by RVWheel's `DICONDITION` spring. Three points of evidence support that
+limited claim:
+1. DirectInput's own documented condition-effect formula
+   (`force = coefficient * (position - offset)`) means a coefficient of
+   0 mathematically produces 0 force; there is no evidence of an error in
+   this project's `[0,1] -> DICONDITION` coefficient conversion.
+2. This document's own earlier entries (Step 7, and the background
+   validation runs) already recorded "the wheel's own baseline
+   resistance (present even with no RVWheel code running at all, and
+   independent of G HUB, which was still closed)" and operators
+   consistently describing the spring as "lighter," never "absent."
+3. Today's dedicated experiment -- destroying the effect object itself,
+   not just lowering its coefficient -- changed nothing the operator
+   could feel.
+That evidence did **not** justify the former broader conclusion that no
+DirectInput control could remove it. Microsoft's official documentation
+defines a separate device-wide property, `DIPROP_AUTOCENTER`, explicitly says
+an application using force feedback should disable it before playing effects,
+and distinguishes it from an application's own spring effect. Microsoft also
+documents that it must be changed while the device is unacquired (only
+`DIPROP_FFGAIN` is writable while acquired). The official FFConst sample sets
+AUTOCENTER=OFF after configuring the cooperative level and before acquisition/effect
+playback. Sources:
+[SetProperty](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee417929(v=vs.85)),
+[Device Properties](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee416595(v=vs.85)), and
+[official FFConst sample](https://github.com/walbourn/directx-sdk-samples-reworked/blob/main/DirectInput/FFConst/ffconst.cpp).
+
+RVWheel now models that as an ownership-session lifecycle: on the real
+`BridgeForceFeedbackSession::Enable()` boundary, DirectInput unacquires,
+snapshots `DIPROP_AUTOCENTER`, requests OFF, reads it back, then reacquires.
+Transient watchdog/effect stops do not restore it. Final session teardown
+stops effects, restores the exact snapshot while unacquired, and releases
+exclusive ownership. Failure to begin leaves the engine disabled; failure to
+restore makes shutdown explicitly unconfirmed. The generic lifecycle and its
+error/idempotency behavior are unit-tested without COM; the actual property
+call remains hardware-only.
+
+**Isolated native-autocenter experiment (2026-08-10): physically no effect on
+this G923.** The mode below creates no `IDirectInputEffect` and never calls
+`ApplyForceFeedback`; it provides a three-second baseline, requests
+AUTOCENTER=OFF for five seconds, restores the prior value, and exits.
+
+```powershell
+& ".\build\tools\device_probe\Release\rvwheel_device_probe.exe" `
+  --ffb-hw-test-autocenter `
+  --ffb-cooperative-level background
+```
+
+The command was run twice under `EXCLUSIVE | BACKGROUND`, with separate
+operator authorization. Both executions passed technically:
+
+- `DIPROP_AUTOCENTER` read as ON, changed to OFF, and read back as OFF;
+- the exclusive device was reacquired and input remained readable (245 polls
+  in the first run, 244 in the second, both over 5.01 seconds);
+- `GetForceFeedbackState` reported `ACTUATORSOFF | EMPTY | POWERON`, confirming
+  no effect was loaded or playing;
+- `EndForceFeedbackSession(): Ok`, and the prior ON value was restored with
+  read-back confirmation; both processes exited `0`.
+
+The first run had no usable physical observation because the operator did not
+see that the short window had begun. The immediately repeated run had a valid
+observation: the operator reported **absolutely no perceptible change** during
+or after the five-second OFF window. No self-motion, vibration, oscillation, or
+abnormal residual force was reported.
+
+Therefore the API/lifecycle experiment is a **technical pass but a physical
+failure for its intended G923 effect**. This driver accepts and reports the
+property transition without changing the wheel's resting centering resistance.
+Combined with the zero-coefficient and effect-retirement runs above, the
+remaining resistance is not an RVWheel spring effect and is not removed by
+DirectInput's documented native-autocenter property on this G923/G HUB stack.
+The exact lower layer responsible (G HUB driver state, firmware, or another
+device behavior) remains unknown; this result does not identify it.
+
+The lifecycle remains implemented because it follows Microsoft's documented
+FFB setup contract and may prevent double-centering on other wheel drivers.
+It must not be described as a G923 standstill-resistance fix. Future wheel
+profiles/validation should record whether the property has a physical effect
+per model rather than assuming all DirectInput wheels behave like this one.
+
+For future hardware, technical pass requires the diagnostic line
+`DIPROP_AUTOCENTER changed ON -> OFF ... (read-back confirmed)`, readable
+input throughout, `EndForceFeedbackSession(): Ok`, and
+`Restored pre-session DIPROP_AUTOCENTER value`. A warning that the property
+is unsupported, ineffective, or not confirmed makes the result inconclusive,
+even if exit code is zero. Physical pass requires noticeably lower/no
+return-to-center resistance **only during the five-second window**, the prior
+feel returning immediately afterward, and absolutely no self-motion,
+oscillation, or vibration. Stop immediately if the wheel moves by itself.
+This command still changes a real device-wide motor-control property and must
+not be run without explicit per-run authorization. It should not be repeated
+on this G923 merely to seek a different subjective result; the controlled test
+already answered the question.
+
+### Logitech G923 firmware-autocenter experiment
+
+The DirectInput property experiment above established that this G923 driver
+reports an ineffective state change. Read-only HID inspection then identified
+the exact G923 PS/PC control collection (`046D:C266`, usage page/usage
+`0001/0004`, report ID `0`, 16-byte output payload). The classic Logitech
+firmware commands were restricted to that identity and full layout; no other
+device can enter this diagnostic.
+
+**2026-08-10 — control-transfer attempt: rejected, no physical change.** The
+first separately authorized run used `HidD_SetOutputReport`. The exact device
+was found, but the OFF request failed immediately with Win32 error 31; no
+five-second window occurred. The operator confirmed normal resistance. The
+path was replaced, not retried, because Windows HID also exposes the output
+endpoint through `WriteFile` and the device had rejected the control transfer.
+The failure path was hardened to attempt an immediate best-effort restore even
+when OFF is not confirmed.
+
+**2026-08-10 — HID `WriteFile`, five-second OFF/restore: technical and physical
+pass.** With new explicit authorization, the exact command was:
+
+```powershell
+& ".\build\tools\device_probe\Release\rvwheel_device_probe.exe" `
+  --ffb-hw-test-logitech-g923-autocenter
+```
+
+The OFF report was accepted, the complete five-second window elapsed, the ON
+restore report was accepted, and the process exited `0`. The operator reported
+that the wheel **stopped returning to center completely during the window**
+and **returned to its normal centering behavior as soon as the timer ended**.
+No residual abnormal behavior was reported. This directly answers the
+standstill-resistance question for this exact hardware/driver stack.
+
+The validated controller is now wired into the production FFB ownership
+lifecycle for `046D:C266`: begin is fail-closed if firmware OFF is not
+confirmed; DirectInput-acquire failure triggers an immediate restore attempt;
+final end restores firmware ON and makes any failure part of the bridge's
+unconfirmed-shutdown result.
+
+**2026-08-10 — first production in-game run: partial pass, ordering hypothesis
+raised.** The launcher/bridge used the same isolated test profile with
+`minimumScale=0.0`. Steering, speed telemetry, and the speed-sensitive spring
+worked: resistance increased as the vehicle accelerated. At a standstill,
+however, the operator reported that the wheel still returned to center. The
+bridge log showed that the accepted Logitech firmware OFF report was followed
+by DirectInput `Acquire()`. Shutdown was clean and confirmed both the
+DirectInput-property restore and the Logitech firmware ON restore; the wheel
+had no abnormal residual behavior after the game closed.
+
+This did not contradict the isolated `WriteFile` pass: that diagnostic never
+acquired DirectInput or created an effect after sending OFF. The production
+lifecycle was changed experimentally to acquire the exclusive DirectInput
+device first and send the exact validated firmware OFF report afterward. Both
+Debug and Release rebuilt without warnings, and 298/298 tests passed in each
+configuration before a new separately authorized run.
+
+**2026-08-10 — OFF after DirectInput acquire: speed curve passed, standstill
+autocenter still failed.** The log confirmed the intended sequence:
+`DIPROP_AUTOCENTER ... OFF`, then `Logitech G923 firmware autocenter disabled
+after DirectInput Acquire via HID WriteFile`, then the FFB ownership session
+and engine became active. Telemetry showed requested/applied spring values
+near zero at rest, and the operator confirmed that resistance increased as the
+vehicle accelerated. Nevertheless, the wheel still returned to center while
+the vehicle was stopped. The ordering change alone was therefore disproven as
+a production fix.
+
+**2026-08-10 — concurrent five-second re-send: blocked and physically
+ineffective.** With separate authorization and the game/bridge still active,
+a second diagnostic process attempted the otherwise validated five-second HID
+OFF/restore sequence. It did not complete within the bounded observation
+period, emitted no confirmation before termination, and the operator reported
+that the wheel continued returning to center throughout. The extra process was
+terminated and confirmed absent; the main bridge remained healthy. Because
+the output was buffered, this run cannot identify which individual write
+blocked, but it does establish that this concurrent two-writer arrangement is
+not operationally safe or useful.
+
+**Conclusion:** the raw firmware command is a valid isolated diagnostic, not a
+production supplement to DirectInput FFB. Its bridge hook was removed. The
+diagnostic now fails closed whenever another `rvwheel_device_probe` process is
+running, preventing a repeat of the known contention. The clean future design
+for `046D:C266` is a single Logitech output backend that owns both effects and
+autocenter while DirectInput remains input-only. That backend is not yet
+implemented or claimed as validated.
+
 ## Recording results
 
 For each step, record: date, exact command/config used, hardware

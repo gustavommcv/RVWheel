@@ -24,6 +24,7 @@
 | DirectInput effect creation/update/stop (`CreateEffect`, `SetParameters`, `Stop`, `SendForceFeedbackCommand`) | Implemented; root cause of the ~2s `DIERR_NOTEXCLUSIVEACQUIRED` failure found and fixed (see Incident log) -- confirmed stable for a full 5s weak effect in both foreground-focused and background cooperative levels |
 | Capability detection (`DIDC_FORCEFEEDBACK`) | Implemented and confirmed working against a real G923 (read-only) |
 | Exclusive FFB acquisition | Confirmed working on a real G923 without breaking input polling, in both `DISCL_FOREGROUND` and `DISCL_BACKGROUND` |
+| Logitech G923 firmware autocenter (`046D:C266`) | Exact HID-layout-gated `WriteFile` diagnostic implemented and physically validated in isolation: centering stopped for the complete five-second OFF window and returned immediately after restore. **Diagnostic only, not part of the bridge:** two in-game integration attempts retained standstill centering, and a concurrent re-send blocked. The production design must use one G923 output owner rather than mixing raw HID and DirectInput effects |
 | Cooperative-level hypothesis (`DISCL_FOREGROUND` vs `DISCL_BACKGROUND`) | **Resolved as a red herring**: the ~2s failure was a `DeviceManager` re-enumeration bug, not a foreground/background distinction. Fixed once, confirmed stable in both modes |
 | Safety controller (clamps, watchdog, slew rate, fault handling) | Implemented, unit-tested (37+ tests); a real gain-ramp overshoot bug was found and fixed after the first real activation |
 | Profile-configured spring/damper source | Implemented, unit-tested; ran a full stable 5s window on real hardware across multiple runs, see Incident log |
@@ -360,21 +361,38 @@ again, delete its `forceFeedback` block or set `enabled` back to `false`.
 
 ## Limitations
 
-- No telemetry-derived effect (self-aligning torque, collision impulses,
-  terrain/engine vibration) is implemented; only a profile-configured
-  spring/damper baseline exists. `--bridge --enable-force-feedback` applies
-  a static centering spring regardless of speed, steering angle, terrain,
-  or collisions -- it does not "feel" the game in any way yet.
-- A Lua-side telemetry transport now exists end-to-end (`RVT1`, see
+- Self-aligning torque, collision impulses, terrain/engine vibration, and
+  any RPM- or yaw-rate-derived effect are **not** implemented. The only
+  telemetry-derived effect is `SpeedSensitiveSpringSource` (opt-in via
+  `forceFeedback.speedSensitiveSpring.enabled`): the same centering
+  spring, scaled by vehicle speed via a smoothstep curve (weakest at
+  rest, full `springStrength` at and above
+  `fullStrengthSpeedMetersPerSecond`). When this block is absent or
+  `enabled: false` (the default), behavior is exactly the static
+  `SpringDamperSource` path this section otherwise describes.
+- The Lua-side telemetry transport (`RVT1`, see
   [ARCHITECTURE.md](ARCHITECTURE.md#vehicle-telemetry-protocol-rvt1) and
-  `--telemetry-monitor` below), producing a real, parsed
-  `rvwheel::ffb::VehicleTelemetry` value from the possessed vehicle's
-  actual speed/lateral velocity. **It is not connected to anything that
-  applies force.** `BridgeForceFeedbackSession` still always ticks the
-  engine with an empty `VehicleTelemetry`; nothing in this repository
-  makes force feedback react to vehicle speed yet. Yaw rate specifically
-  is not part of this transport's confirmed data (see
-  [AVS_TELEMETRY_DISCOVERY.md](game-integration/AVS_TELEMETRY_DISCOVERY.md)).
+  `--telemetry-monitor` below) feeds `SpeedSensitiveSpringSource` when
+  enabled: `RunBridge()` reads it through the same validated
+  `VehicleTelemetryFreshnessTracker`, so a baseline/leftover frame or
+  invalid/non-local telemetry never activates force, and stale telemetry
+  is caught by `ForceFeedbackSafetyController`'s own watchdog exactly like
+  any other stale command. Physically validated on a real G923 (see
+  [FORCE_FEEDBACK_HARDWARE_TEST.md](FORCE_FEEDBACK_HARDWARE_TEST.md#speed-sensitive-spring-first-physical-test-and-native-autocenter-follow-up)):
+  the curve behaves correctly end-to-end. A zero `DICONDITION` coefficient
+  does not remove the G923's separate resting resistance. DirectInput's
+  `DIPROP_AUTOCENTER` transition/read-back also produced absolutely no physical
+  change on this G923/G HUB stack. RVWheel keeps the standards-compliant
+  DirectInput lifecycle for generic wheels. The exact Logitech G923 PS/PC
+  (`046D:C266`) also has a separately gated firmware diagnostic: its isolated
+  five-second test stopped centering for the entire OFF window and the ON
+  restore immediately returned normal behavior. That raw HID path is not
+  invoked by the production bridge because the real in-game attempts showed
+  it cannot be combined reliably with active DirectInput effects.
+  Yaw rate specifically is
+  not part of this transport's confirmed data (see
+  [AVS_TELEMETRY_DISCOVERY.md](game-integration/AVS_TELEMETRY_DISCOVERY.md)),
+  so nothing here uses it.
 - A normal player run of `rvwheel_launcher.exe` (no arguments) never
   enables force feedback regardless of profile content -- this stays true
   even though the launcher can now forward `--enable-force-feedback`/
@@ -384,6 +402,26 @@ again, delete its `forceFeedback` block or set `enabled` back to `false`.
   restarting the bridge process in this first version -- periodic
   re-enumeration is disabled for the whole run once exclusive access is
   requested, so a physical unplug/replug is not rediscovered.
+- Native autocenter control is session-scoped, not effect-scoped:
+  `BeginForceFeedbackSession()` snapshots the current value while unacquired,
+  requests `DIPROPAUTOCENTER_OFF`, verifies read-back, and reacquires;
+  watchdog calls to `StopForceFeedback()` deliberately leave it off so a
+  device that physically honors the property does not reintroduce native
+  resistance whenever speed reaches zero; the final
+  `EndForceFeedbackSession()` restores the snapshot and releases acquisition.
+  Unsupported/ineffective properties are logged rather than guessed. Normal
+  Ctrl+C/launcher shutdown runs the restoration path; a forcibly killed
+  process cannot guarantee C++ teardown, so physically verify the wheel and
+  restart G HUB or reconnect the wheel before another run if shutdown was
+  abnormal. On the tested G923/G HUB stack, DirectInput ON/OFF/read-back all
+  succeeded but caused no perceptible physical change. The exact `046D:C266`
+  HID `WriteFile` command is available only through the explicitly authorized
+  standalone diagnostic. It is not called by `BeginForceFeedbackSession()` or
+  `EndForceFeedbackSession()`: sending it before or after DirectInput acquire
+  did not remove standstill centering once effects were active, and a
+  concurrent re-send blocked. The diagnostic refuses to run while another
+  probe process exists. A production G923 solution therefore needs one output
+  backend to own both its effects and firmware autocenter protocol.
 - Only the Logitech G923's `masterGain`/`springStrength`/
   `maxTorqueNormalized` at `0.2` and `slewRatePerSecond` at `0.5` have been
   physically validated (see the hardware test incident log, and

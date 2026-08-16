@@ -67,6 +67,23 @@ does not touch axis data.
   [IDirectInputDevice8::SetCooperativeLevel](http://doc.51windows.net/Directx9_SDK/input/ref/ifaces/idirectinputdevice9/setcooperativelevel.htm).
   Force feedback (which needs exclusive access) is intentionally out of
   scope for the default build.
+- Explicit FFB runs have a separate ownership lifecycle. Once readiness is
+  reached, `BeginForceFeedbackSession()` temporarily unacquires the exclusive
+  DirectInput device, snapshots the device-wide `DIPROP_AUTOCENTER`, requests
+  OFF, verifies it, and reacquires before any effect is played. Watchdog calls
+  to `StopForceFeedback()` stop effects but deliberately do not end ownership;
+  final `EndForceFeedbackSession()` restores the snapshot while unacquired and
+  releases the device. This distinction keeps the property OFF across
+  transient zero-speed/watchdog edges on drivers that physically honor it.
+  The tested G923 accepted/read back the transition but showed no perceptible
+  change. A narrow, exact-layout-gated HID diagnostic for the G923 PS/PC
+  (`046D:C266`) proved that its firmware autocenter can be disabled with
+  `WriteFile` when used alone. It is intentionally not part of the bridge:
+  two in-game runs retained standstill centering, and a second process trying
+  to write while DirectInput effects were active blocked without producing a
+  physical change. The diagnostic now refuses to run while another probe is
+  active. Supporting this device cleanly requires a single G923 output owner
+  for both effects and autocenter; DirectInput remains the input path.
 - `LogitechDevice` / `ILogitechSdk` exist behind `RVWHEEL_ENABLE_LOGITECH_SDK`
   (default `OFF`) so the proprietary Logitech SDK is never a build
   requirement — DirectInput alone already exposes every axis/button/POV this
@@ -223,11 +240,12 @@ RVT1 <seqStart> <valid> <local> <speedMps> <forwardMps> <lateralMps> <yawRateOrD
 - **`--telemetry-monitor` is a read-only diagnostic.** It never enumerates
   or acquires a wheel device and never calls `ApplyForceFeedback`/
   `StopForceFeedback` — it only parses and prints the transport file.
-  **`ToVehicleTelemetry`'s output is not yet connected to
-  `BridgeForceFeedbackSession`/`ForceFeedbackEngine`.** Force feedback
-  still only ever applies the static, profile-configured spring described
-  in [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md); nothing in this
-  repository makes it react to vehicle speed yet.
+  **`ToVehicleTelemetry`'s output feeds `SpeedSensitiveSpringSource`,
+  opt-in per profile** (`forceFeedback.speedSensitiveSpring.enabled`,
+  default off) — see [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md) for the
+  curve and the physical validation record. This is still only a
+  speed-scaled centering spring; self-aligning torque, collisions,
+  terrain, and RPM-derived effects remain entirely unimplemented.
 
 ### Launcher (`tools/launcher`)
 
@@ -303,13 +321,13 @@ deterministically in CI, with no physical wheel attached.
   redistributing a third-party loader alongside this project would blur
   license and support boundaries that are cleaner left separate.
 - Force feedback has a real, opt-in path (`rvwheel_device_probe --bridge
-  --enable-force-feedback`), physically validated on a real G923 for a
-  static centering spring. A vehicle-telemetry transport (`RVT1`, see
-  above) now exists end-to-end from the game to a parsed
-  `rvwheel::ffb::VehicleTelemetry` value, but it is **not connected** to
-  `ForceFeedbackEngine` -- no self-aligning torque, terrain, or collision
-  effects exist yet, the launcher does not enable force feedback
-  automatically, and reconnecting the wheel mid-session requires
-  restarting the bridge — see [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md).
+  --enable-force-feedback`), physically validated on a real G923: a
+  static centering spring, and now also a speed-scaled one
+  (`SpeedSensitiveSpringSource`, opt-in per profile, fed by the `RVT1`
+  vehicle-telemetry transport described above). No self-aligning torque,
+  terrain, or collision effects exist yet, the launcher does not enable
+  force feedback automatically, and reconnecting the wheel mid-session
+  requires restarting the bridge — see
+  [docs/FORCE_FEEDBACK.md](FORCE_FEEDBACK.md).
 - Only the Logitech G923 (VID `046D` PID `C266`) plus its attached H-pattern
   shifter has a verified profile and Lua gear mapping today.

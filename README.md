@@ -20,14 +20,14 @@ Working and validated:
 - guided calibration with continuous 60 Hz acquisition and stable-window sampling for unknown devices;
 - standalone `rvwheel_device_probe` for listing, monitoring, capturing, calibrating, and hosting the live bridge;
 - native `rvwheel_launcher` for one-click mod sync, bridge supervision, and Steam game startup;
-- 231 unit tests passing in Release at the latest local validation;
+- 298 unit tests passing in Debug and Release at the latest local validation;
 - Logitech G923 (`046D:C266`) detected on real hardware with 25 buttons, one POV, three pedal axes, steering, and reported FFB capability.
 - playable UE4SS integration validated with steering, throttle, brake, clutch,
   Logitech H-pattern gears 1–5, neutral, and reverse.
 - an opt-in force feedback path, reachable from either
   `rvwheel_device_probe --bridge --enable-force-feedback` or
   `rvwheel_launcher --enable-force-feedback [--profiles-dir <path>]`: runs
-  the profile-configured centering spring through the real safety
+  the profile-configured static or speed-sensitive centering spring through the real safety
   controller, holding exclusive DirectInput access without disrupting
   input publishing. Validated on a real G923 (weak spring, masterGain/
   springStrength 0.2, slew rate 0.5/s): the underlying spring/safety-
@@ -39,8 +39,18 @@ Working and validated:
   resistance returned to normal after closing the game — see
   [docs/FORCE_FEEDBACK.md](docs/FORCE_FEEDBACK.md). Off by default,
   requires two independent explicit opt-ins (the flag and the profile's own
-  `forceFeedback.enabled`), and does **not** yet react to speed, terrain,
-  or collisions — no vehicle telemetry feeds it.
+  `forceFeedback.enabled`). The opt-in `SpeedSensitiveSpringSource` now reacts
+  to validated RVT1 speed telemetry; terrain, collisions, yaw-derived SAT,
+  and vibration are still unimplemented. DirectInput native-autocenter
+  ownership/restoration follows Microsoft's documented lifecycle. It passed
+  ON/OFF/restore read-back on the real G923 but caused no perceptible physical
+  change. The exact G923 `046D:C266` has a separate HID diagnostic that was
+  physically validated in isolation: centering stopped for the complete
+  five-second OFF window and returned after restore. Two in-game integration
+  attempts showed that raw HID autocenter control and active DirectInput
+  effects are not reliable concurrent writers, so this command is deliberately
+  **not** part of the production bridge. A future G923-specific output backend
+  must own the complete FFB protocol instead of mixing the two paths.
 
 Still required before this is a polished installable mod:
 
@@ -48,8 +58,8 @@ Still required before this is a polished installable mod:
 - move game/button mappings into user-facing profile controls;
 - package UE4SS and the launcher into a polished end-user installer;
 - validate multiplayer behavior;
-- wire vehicle telemetry from Lua into the force feedback engine so effects
-  can react to actual driving, not just a static centering spring; a normal
+- expand telemetry-driven force feedback beyond the current speed-scaled
+  spring as additional vehicle signals are validated; a normal
   double-click launcher run still never enables force feedback on its own,
   and a wheel reconnect currently requires restarting the bridge while
   `--enable-force-feedback` is active.
@@ -190,6 +200,19 @@ real force, and only when the resolved profile also has
 two required opt-ins, and the physical safety procedure. Hardware captures
 (`*.jsonl`) are local diagnostic artifacts and are ignored by Git; derived,
 reviewed findings belong under `docs/hardware/`.
+
+`--ffb-hw-test-autocenter` is a real, separately gated diagnostic: it creates
+no effect, requests DirectInput native autocenter OFF for five seconds, then
+restores the exact prior value. Do not run it casually; use the authorization,
+expected-output, and physical pass/fail procedure in
+[docs/FORCE_FEEDBACK_HARDWARE_TEST.md](docs/FORCE_FEEDBACK_HARDWARE_TEST.md).
+
+`--logitech-hid-info` is a read-only collection/report-layout diagnostic.
+`--ffb-hw-test-logitech-g923-autocenter` is a different, real hardware test,
+locked to VID `046D`, PID `C266`, and the exact validated HID layout. It sends
+the Logitech firmware OFF command for five seconds and then the ON restore;
+each execution requires explicit authorization. It refuses to run while
+another `rvwheel_device_probe` process (including the bridge) is active.
 
 For the manually validated UE4SS installation and current limitations, see
 [the first in-game test](docs/game-integration/UE4SS_FIRST_TEST.md) and the
