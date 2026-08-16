@@ -18,6 +18,7 @@ set(_rvwheel_probe_test_sources "")
 if(TARGET rvwheel_device_probe_core)
     list(APPEND _rvwheel_probe_test_sources
         BridgeForceFeedbackSessionTests.cpp
+        BridgeForceFeedbackSessionAdaptiveTests.cpp
         BridgePoliciesTests.cpp
         DeviceProbeParsingTests.cpp
         DeviceProbeFormattingTests.cpp
@@ -42,22 +43,29 @@ add_executable(rvwheel_dal_tests
     ForceFeedbackProfileTests.cpp
     ForceFeedbackSafetyControllerTests.cpp
     LogitechDeviceTests.cpp
+    LogitechG923HidAutocenterTests.cpp
+    ${PROJECT_SOURCE_DIR}/src/Devices/Logitech/src/LogitechG923HidAutocenter.cpp
     ProfileLoaderTests.cpp
     ProfileRepositoryTests.cpp
     ProfileResolverTests.cpp
+    SpeedSensitiveSpringSourceTests.cpp
     SpringDamperSourceTests.cpp
     Win32HeaderSmokeTest.cpp
     ${_rvwheel_probe_test_sources}
     ${_rvwheel_launcher_test_sources}
 )
 
-target_include_directories(rvwheel_dal_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(rvwheel_dal_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/src/Devices/Logitech/src
+)
 target_compile_features(rvwheel_dal_tests PRIVATE cxx_std_20)
 # rvwheel::profiles/rvwheel::ffb (unlike rvwheel_device_probe_core) are
 # always built -- see the top-level CMakeLists.txt's unconditional
 # add_subdirectory(src/Profiles) / add_subdirectory(src/ForceFeedback) --
 # so their tests link directly rather than through the tool.
-target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel::dal rvwheel::profiles rvwheel::ffb Catch2::Catch2WithMain)
+target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel::dal rvwheel::profiles rvwheel::ffb Catch2::Catch2WithMain
+                                                    hid setupapi)
 
 if(TARGET rvwheel_device_probe_core)
     target_link_libraries(rvwheel_dal_tests PRIVATE rvwheel_device_probe_core)

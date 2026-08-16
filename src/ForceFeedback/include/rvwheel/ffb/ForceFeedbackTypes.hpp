@@ -29,6 +29,25 @@ struct VehicleTelemetry {
     }
 };
 
+// Opt-in speed-dependent scaling of the centering spring: at rest the
+// spring is `minimumScale` of the profile's springStrength, ramping via a
+// smoothstep curve (never a step) up to full springStrength at
+// fullStrengthSpeedMetersPerSecond and beyond -- see SpeedSensitiveSpringSource.
+// Absent from a profile, or enabled=false, preserves the exact static
+// SpringDamperSource behavior; this struct's own defaults keep it inert.
+struct SpeedSensitiveSpringConfig {
+    bool enabled = false;
+    float minimumScale = 0.25f;                    // [0, 1] fraction of springStrength applied at zero speed.
+    float fullStrengthSpeedMetersPerSecond = 5.0f;  // (0, kMaxFullStrengthSpeedMetersPerSecond]; conservative, not a real top speed.
+
+    // Sanity ceiling for fullStrengthSpeedMetersPerSecond -- generous
+    // enough for any reasonable "full strength" threshold, documented as
+    // conservative rather than physically exact, the same way this
+    // project's other numeric domains are (see e.g. VehicleTelemetryTransport.cpp's
+    // kMaxPlausibleSpeedMetersPerSecond).
+    static constexpr float kMaxFullStrengthSpeedMetersPerSecond = 50.0f;
+};
+
 // Per-profile force feedback tuning and safety limits. Every field defaults
 // to "off"/conservative so a profile that omits this block entirely, or an
 // older profile written before this field existed, behaves identically to
@@ -49,6 +68,8 @@ struct ForceFeedbackConfig {
     float slewRatePerSecond = 2.0f;   // Max normalized-force change per second the safety controller allows.
 
     std::chrono::milliseconds watchdogTimeout{200}; // How long a command/telemetry sample stays "fresh".
+
+    SpeedSensitiveSpringConfig speedSensitiveSpring; // Opt-in; defaults to inert (enabled=false).
 };
 
 enum class ForceFeedbackState : std::uint8_t {

@@ -65,9 +65,13 @@ std::string CliParser::UsageText() {
            "  rvwheel_device_probe --ffb-simulate [--duration <seconds>] [--rate <hz>] [--profile <id-or-path>]\n"
            "  rvwheel_device_probe --ffb-hw-test-stop-only\n"
            "                              [--ffb-cooperative-level background|foreground|foreground-focused]\n"
+           "  rvwheel_device_probe --ffb-hw-test-autocenter\n"
+           "                              [--ffb-cooperative-level background|foreground|foreground-focused]\n"
            "  rvwheel_device_probe --ffb-hw-test-weak-effect [--effect spring|damper]\n"
            "                              [--ffb-cooperative-level background|foreground|foreground-focused]\n"
            "  rvwheel_device_probe --telemetry-monitor [--duration <seconds>] [--rate <hz>]\n"
+           "  rvwheel_device_probe --logitech-hid-info\n"
+           "  rvwheel_device_probe --ffb-hw-test-logitech-g923-autocenter\n"
            "\n"
            "Options:\n"
            "  --duration <seconds>   How long --monitor/--capture/--ffb-simulate/--telemetry-monitor run.\n"
@@ -114,6 +118,9 @@ std::string CliParser::UsageText() {
            "    the first FFB-capable device and calls the real StopForceFeedback() exactly once. It never\n"
            "    creates or starts an effect. Only run this as part of the gated procedure in\n"
            "    docs/FORCE_FEEDBACK_HARDWARE_TEST.md, with the wheel secured and someone watching.\n"
+           "  - --ffb-hw-test-autocenter is a REAL hardware test: it changes DIPROP_AUTOCENTER to OFF\n"
+           "    for a fixed 5-second window, creates NO effect, then restores the exact prior value. It should\n"
+           "    change resistance only; it must never move the wheel on its own. Explicit authorization required.\n"
            "  - --ffb-hw-test-weak-effect is a REAL hardware test: it applies ONE real, weak (gain 0.2) effect\n"
            "    for a fixed 5 seconds via the real ForceFeedbackSafetyController, then stops. Only run this\n"
            "    after --ffb-hw-test-stop-only has passed, per docs/FORCE_FEEDBACK_HARDWARE_TEST.md.\n"
@@ -122,15 +129,25 @@ std::string CliParser::UsageText() {
            "  - --telemetry-monitor only reads and prints the vehicle-telemetry.txt file that\n"
            "    mods/RVWheel/Scripts/main.lua writes; it NEVER enumerates or acquires a wheel device and NEVER\n"
            "    calls ApplyForceFeedback/StopForceFeedback -- it is safe to run with no wheel attached at all.\n"
+           "  - --logitech-hid-info performs a read-only HID capability inspection for attached Logitech\n"
+           "    devices. Handles are opened with desiredAccess=0; it never sends an input/output/feature\n"
+           "    report and cannot apply force feedback.\n"
+           "  - --ffb-hw-test-logitech-g923-autocenter is a REAL, G923-SPECIFIC hardware test. It sends\n"
+           "    the firmware autocenter-disable command for a fixed 5-second window and then sends the\n"
+           "    matching re-enable command. It is locked to VID 046D / PID C266 and the exact expected\n"
+           "    HID report layout. Explicit per-run authorization is required. It refuses to run while\n"
+           "    another rvwheel_device_probe process (including --bridge) is active.\n"
            "  - Exactly one of --help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/\n"
-           "    --ffb-hw-test-stop-only/--ffb-hw-test-weak-effect/--telemetry-monitor must be given.\n";
+           "    --ffb-hw-test-stop-only/--ffb-hw-test-autocenter/--ffb-hw-test-weak-effect/--telemetry-monitor/\n"
+           "    --logitech-hid-info/--ffb-hw-test-logitech-g923-autocenter\n"
+           "    must be given.\n";
 }
 
 CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     constexpr const char* kConflictingModeMessage =
         "Conflicting mode flags: only one of "
         "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/--ffb-hw-test-stop-only/"
-        "--ffb-hw-test-weak-effect/--telemetry-monitor may be given.";
+        "--ffb-hw-test-autocenter/--ffb-hw-test-weak-effect/--telemetry-monitor may be given.";
 
     CliParseResult result;
     bool modeSet = false;
@@ -203,6 +220,12 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
             }
             result.options.mode = ProbeMode::FfbHardwareTestStopOnly;
             modeSet = true;
+        } else if (arg == L"--ffb-hw-test-autocenter") {
+            if (modeSet) {
+                return Fail(kConflictingModeMessage);
+            }
+            result.options.mode = ProbeMode::FfbHardwareTestAutoCenter;
+            modeSet = true;
         } else if (arg == L"--ffb-hw-test-weak-effect") {
             if (modeSet) {
                 return Fail(kConflictingModeMessage);
@@ -214,6 +237,18 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
                 return Fail(kConflictingModeMessage);
             }
             result.options.mode = ProbeMode::TelemetryMonitor;
+            modeSet = true;
+        } else if (arg == L"--logitech-hid-info") {
+            if (modeSet) {
+                return Fail(kConflictingModeMessage);
+            }
+            result.options.mode = ProbeMode::LogitechHidInfo;
+            modeSet = true;
+        } else if (arg == L"--ffb-hw-test-logitech-g923-autocenter") {
+            if (modeSet) {
+                return Fail(kConflictingModeMessage);
+            }
+            result.options.mode = ProbeMode::FfbHardwareTestLogitechG923AutoCenter;
             modeSet = true;
         } else if (arg == L"--effect") {
             if (i + 1 >= args.size()) {
@@ -331,7 +366,8 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
     if (!modeSet) {
         return Fail("No mode given. Specify exactly one of "
                      "--help/--list/--profiles/--calibrate/--monitor/--capture/--bridge/--ffb-simulate/"
-                     "--ffb-hw-test-stop-only/--ffb-hw-test-weak-effect/--telemetry-monitor.");
+                     "--ffb-hw-test-stop-only/--ffb-hw-test-autocenter/--ffb-hw-test-weak-effect/"
+                     "--telemetry-monitor/--logitech-hid-info/--ffb-hw-test-logitech-g923-autocenter.");
     }
 
     if (durationSet && result.options.mode != ProbeMode::Monitor && result.options.mode != ProbeMode::Capture &&
@@ -360,6 +396,7 @@ CliParseResult CliParser::Parse(const std::vector<std::wstring>& args) {
         return Fail("--effect only applies to --ffb-hw-test-weak-effect.");
     }
     if (ffbCooperativeLevelSet && result.options.mode != ProbeMode::FfbHardwareTestStopOnly &&
+        result.options.mode != ProbeMode::FfbHardwareTestAutoCenter &&
         result.options.mode != ProbeMode::FfbHardwareTestWeakEffect) {
         return Fail("--ffb-cooperative-level only applies to real FFB hardware-test modes.");
     }

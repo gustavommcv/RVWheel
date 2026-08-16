@@ -54,11 +54,12 @@ TEST_CASE("BridgeForceFeedbackSession: with enabled=false in config, Enable() ne
     disabled.enabled = false;
     rvwheel::tools::probe::BridgeForceFeedbackSession session(device, disabled);
 
-    session.Enable();
+    REQUIRE(session.Enable().IsOk());
     session.Tick(T(0));
     session.Tick(T(20));
 
     REQUIRE(device.forceFeedbackCallCount == 0);
+    REQUIRE(device.beginForceFeedbackSessionCallCount == 0);
     REQUIRE(session.State() == ForceFeedbackState::Disabled);
 }
 
@@ -67,11 +68,13 @@ TEST_CASE("BridgeForceFeedbackSession: once enabled, applies the profile's own s
     FakeWheelDevice device(MakeFakeInfo());
     rvwheel::tools::probe::BridgeForceFeedbackSession session(device, ValidatedConfig());
 
-    session.Enable();
+    REQUIRE(session.Enable().IsOk());
+    REQUIRE(session.Enable().IsOk()); // Idempotent ownership preparation.
     session.Tick(T(0));
     session.Tick(T(20));
 
     REQUIRE(device.forceFeedbackCallCount >= 1);
+    REQUIRE(device.beginForceFeedbackSessionCallCount == 1);
     REQUIRE(device.appliedCommands.back().spring > 0.0f);
     REQUIRE(device.appliedCommands.back().damper == 0.0f);
 }
@@ -106,11 +109,12 @@ TEST_CASE("BridgeForceFeedbackSession: destructor stops the device even without 
     FakeWheelDevice device(MakeFakeInfo());
     {
         rvwheel::tools::probe::BridgeForceFeedbackSession session(device, ValidatedConfig());
-        session.Enable();
+        REQUIRE(session.Enable().IsOk());
         session.Tick(T(0));
         session.Tick(T(20));
     }
     REQUIRE(device.stopForceFeedbackCallCount >= 1);
+    REQUIRE(device.endForceFeedbackSessionCallCount == 1);
 }
 
 TEST_CASE("BridgeForceFeedbackSession: a backend failure faults the session and stops the device, "
@@ -119,7 +123,7 @@ TEST_CASE("BridgeForceFeedbackSession: a backend failure faults the session and 
     FakeWheelDevice device(MakeFakeInfo());
     rvwheel::tools::probe::BridgeForceFeedbackSession session(device, ValidatedConfig());
 
-    session.Enable();
+    REQUIRE(session.Enable().IsOk());
     session.Tick(T(0));
     device.nextApplyForceFeedbackFailure = Status::BackendError("simulated DIERR_NOTEXCLUSIVEACQUIRED");
     session.Tick(T(20));
@@ -141,7 +145,7 @@ TEST_CASE("BridgeForceFeedbackSession: a disconnect is recoverable, not a perman
     FakeWheelDevice device(MakeFakeInfo());
     rvwheel::tools::probe::BridgeForceFeedbackSession session(device, ValidatedConfig());
 
-    session.Enable();
+    REQUIRE(session.Enable().IsOk());
     session.Tick(T(0));
     device.nextApplyForceFeedbackFailure = Status::NotConnected("simulated disconnect");
     session.Tick(T(20));
@@ -154,7 +158,7 @@ TEST_CASE("BridgeForceFeedbackSession: Stop() after a fault still calls StopForc
     FakeWheelDevice device(MakeFakeInfo());
     rvwheel::tools::probe::BridgeForceFeedbackSession session(device, ValidatedConfig());
 
-    session.Enable();
+    REQUIRE(session.Enable().IsOk());
     session.Tick(T(0));
     device.nextApplyForceFeedbackFailure = Status::BackendError("simulated failure");
     session.Tick(T(20));
@@ -171,7 +175,7 @@ TEST_CASE("BridgeForceFeedbackSession: Stop() reports an unconfirmed result when
     FakeWheelDevice device(MakeFakeInfo());
     rvwheel::tools::probe::BridgeForceFeedbackSession session(device, ValidatedConfig());
 
-    session.Enable();
+    REQUIRE(session.Enable().IsOk());
     session.Tick(T(0));
     // Persistent (not single-shot): Stop()'s own internal engine-driven
     // StopForceFeedback() call may reach the device before Stop()'s
@@ -183,4 +187,36 @@ TEST_CASE("BridgeForceFeedbackSession: Stop() reports an unconfirmed result when
 
     REQUIRE_FALSE(stopResult.Confirmed());
     REQUIRE(stopResult.explicitStopStatus.Code() == StatusCode::BackendError);
+}
+
+TEST_CASE("BridgeForceFeedbackSession: Begin failure leaves the engine disabled and never applies force",
+          "[Bridge][FFB][Lifecycle]") {
+    FakeWheelDevice device(MakeFakeInfo());
+    device.nextBeginForceFeedbackSessionFailure = Status::BackendError("simulated autocenter preparation failure");
+    rvwheel::tools::probe::BridgeForceFeedbackSession session(device, ValidatedConfig());
+
+    const Status enableStatus = session.Enable();
+    session.Tick(T(20));
+
+    REQUIRE(enableStatus.Code() == StatusCode::BackendError);
+    REQUIRE(session.State() == ForceFeedbackState::Disabled);
+    REQUIRE(device.beginForceFeedbackSessionCallCount == 1);
+    REQUIRE(device.forceFeedbackCallCount == 0);
+}
+
+TEST_CASE("BridgeForceFeedbackSession: End failure makes final stop unconfirmed and stays idempotent",
+          "[Bridge][FFB][Lifecycle]") {
+    FakeWheelDevice device(MakeFakeInfo());
+    rvwheel::tools::probe::BridgeForceFeedbackSession session(device, ValidatedConfig());
+    REQUIRE(session.Enable().IsOk());
+    device.persistentEndForceFeedbackSessionFailure = Status::BackendError("simulated autocenter restore failure");
+
+    const auto first = session.Stop();
+    const auto second = session.Stop();
+
+    REQUIRE_FALSE(first.Confirmed());
+    REQUIRE(first.explicitStopStatus.IsOk());
+    REQUIRE(first.sessionEndStatus.Code() == StatusCode::BackendError);
+    REQUIRE(device.endForceFeedbackSessionCallCount == 1);
+    REQUIRE(second.sessionEndStatus.Code() == first.sessionEndStatus.Code());
 }

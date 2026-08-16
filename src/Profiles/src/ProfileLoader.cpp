@@ -269,6 +269,55 @@ void ParseForceFeedback(const nlohmann::json& root, std::optional<rvwheel::ffb::
         }
     }
 
+    // Absent "speedSensitiveSpring" (or an absent field within it) leaves
+    // SpeedSensitiveSpringConfig's own safe defaults (enabled=false) in
+    // place -- a profile written before this field existed, or one that
+    // simply omits it, behaves exactly like the static SpringDamperSource
+    // path. A partial object can never accidentally enable it: `enabled`
+    // itself must be explicitly present and true.
+    if (node.contains("speedSensitiveSpring")) {
+        const auto& sub = node["speedSensitiveSpring"];
+        if (!sub.is_object()) {
+            validator.Fail("forceFeedback.speedSensitiveSpring", "must be an object");
+        } else {
+            if (sub.contains("enabled")) {
+                if (!sub["enabled"].is_boolean()) {
+                    validator.Fail("forceFeedback.speedSensitiveSpring.enabled", "must be a boolean");
+                } else {
+                    config.speedSensitiveSpring.enabled = sub["enabled"].get<bool>();
+                }
+            }
+            if (sub.contains("minimumScale")) {
+                const std::string path = "forceFeedback.speedSensitiveSpring.minimumScale";
+                if (!sub["minimumScale"].is_number()) {
+                    validator.Fail(path, "must be a number");
+                } else {
+                    const double value = sub["minimumScale"].get<double>();
+                    if (value < 0.0 || value > 1.0) {
+                        validator.Fail(path, "must be between 0 and 1");
+                    } else {
+                        config.speedSensitiveSpring.minimumScale = static_cast<float>(value);
+                    }
+                }
+            }
+            if (sub.contains("fullStrengthSpeedMetersPerSecond")) {
+                const std::string path = "forceFeedback.speedSensitiveSpring.fullStrengthSpeedMetersPerSecond";
+                if (!sub["fullStrengthSpeedMetersPerSecond"].is_number()) {
+                    validator.Fail(path, "must be a number");
+                } else {
+                    const double value = sub["fullStrengthSpeedMetersPerSecond"].get<double>();
+                    constexpr double kMaxValue =
+                        static_cast<double>(rvwheel::ffb::SpeedSensitiveSpringConfig::kMaxFullStrengthSpeedMetersPerSecond);
+                    if (!(value > 0.0) || value > kMaxValue) {
+                        validator.Fail(path, "must be greater than 0 and at most " + std::to_string(kMaxValue));
+                    } else {
+                        config.speedSensitiveSpring.fullStrengthSpeedMetersPerSecond = static_cast<float>(value);
+                    }
+                }
+            }
+        }
+    }
+
     outConfig = config;
 }
 
@@ -476,6 +525,14 @@ std::string ProfileLoader::Serialize(const DeviceProfile& profile) {
         node["deadband"] = ffb.deadband;
         node["slewRatePerSecond"] = ffb.slewRatePerSecond;
         node["watchdogTimeoutMilliseconds"] = ffb.watchdogTimeout.count();
+
+        nlohmann::json speedSensitiveSpring;
+        speedSensitiveSpring["enabled"] = ffb.speedSensitiveSpring.enabled;
+        speedSensitiveSpring["minimumScale"] = ffb.speedSensitiveSpring.minimumScale;
+        speedSensitiveSpring["fullStrengthSpeedMetersPerSecond"] =
+            ffb.speedSensitiveSpring.fullStrengthSpeedMetersPerSecond;
+        node["speedSensitiveSpring"] = speedSensitiveSpring;
+
         root["forceFeedback"] = node;
     }
 

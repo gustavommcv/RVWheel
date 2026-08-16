@@ -36,10 +36,14 @@ add_executable(rvwheel_device_probe
     ConsoleRenderer.cpp
     DeviceProbeApp.cpp
     HiddenWindow.cpp
+    LogitechHidInspector.cpp
+    ${PROJECT_SOURCE_DIR}/src/Devices/Logitech/src/LogitechG923HidAutocenter.cpp
     ProfileLocations.cpp
 )
 
-target_link_libraries(rvwheel_device_probe PRIVATE rvwheel_device_probe_core rvwheel::dal rvwheel::profiles rvwheel::ffb)
+target_link_libraries(rvwheel_device_probe PRIVATE rvwheel_device_probe_core rvwheel::dal rvwheel::profiles rvwheel::ffb
+                                                    hid setupapi)
+target_include_directories(rvwheel_device_probe PRIVATE ${PROJECT_SOURCE_DIR}/src/Devices/Logitech/src)
 
 if(MSVC)
     target_compile_options(rvwheel_device_probe PRIVATE /W4 /permissive-)

@@ -21,7 +21,7 @@ namespace rvwheel::dal {
 // resources (COM objects, SDK handles) with backend-specific move
 // semantics, if any.
 //
-// Poll() and ApplyForceFeedback() never throw: backend/SDK failures are
+// Poll() and all force-feedback lifecycle methods never throw: backend/SDK failures are
 // converted into a Status and/or reflected in WheelState::valid /
 // WheelState::connected. This keeps the per-frame path predictable for
 // callers that cannot tolerate exceptions crossing into game/engine code.
@@ -65,6 +65,14 @@ public:
     // sources beforehand).
     virtual Status ApplyLayout(const WheelInputLayout& layout, const DeviceReadinessPolicy& readinessPolicy) noexcept = 0;
 
+    // Begins one explicitly authorized force-feedback ownership session.
+    // Backends may use this boundary for device-wide preparation that must
+    // happen before the first effect (for example, DirectInput's
+    // DIPROP_AUTOCENTER must be changed while the device is unacquired).
+    // The default is a no-op for backends that need no separate lifecycle.
+    // Calls are expected to be idempotent.
+    virtual Status BeginForceFeedbackSession() noexcept { return Status::Ok(); }
+
     // Applies a force feedback command. If the device/backend cannot honor
     // one or more requested components (e.g. no spring support), the
     // components that ARE supported are still applied and the returned
@@ -72,10 +80,17 @@ public:
     // rather than silently dropping the whole command or failing outright.
     virtual Status ApplyForceFeedback(const ForceFeedbackCommand& command) noexcept = 0;
 
-    // Halts any active force feedback effects without releasing underlying
-    // effect resources, so a subsequent ApplyForceFeedback can resume
-    // cheaply (no effect recreation).
+    // Halts any active force feedback effects. This is deliberately NOT an
+    // ownership-session boundary: watchdog/fault recovery may call it and
+    // later resume effects without reinitializing device-wide properties.
     virtual Status StopForceFeedback() noexcept = 0;
+
+    // Ends the explicitly authorized ownership session and restores any
+    // device-wide state changed by BeginForceFeedbackSession. The default
+    // is a no-op. Callers must still call StopForceFeedback first; this
+    // method exists for teardown/restoration, not as an effect stop.
+    // Calls are expected to be idempotent.
+    virtual Status EndForceFeedbackSession() noexcept { return Status::Ok(); }
 
 protected:
     IWheelDevice() = default;

@@ -115,6 +115,24 @@ TEST_CASE("CliParser: --telemetry-monitor conflicts with other modes", "[DeviceP
     REQUIRE_FALSE(CliParser::Parse({L"--list", L"--telemetry-monitor"}).success);
 }
 
+TEST_CASE("CliParser: --logitech-hid-info is a standalone read-only mode",
+          "[DeviceProbe][CliParser][LogitechHidInfo]") {
+    const auto result = CliParser::Parse({L"--logitech-hid-info"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::LogitechHidInfo);
+    REQUIRE_FALSE(CliParser::Parse({L"--logitech-hid-info", L"--list"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--logitech-hid-info", L"--enable-force-feedback"}).success);
+}
+
+TEST_CASE("CliParser: Logitech G923 autocenter hardware test is an isolated fixed mode",
+          "[DeviceProbe][CliParser][FfbHardwareTest][Logitech]") {
+    const auto result = CliParser::Parse({L"--ffb-hw-test-logitech-g923-autocenter"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::FfbHardwareTestLogitechG923AutoCenter);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-logitech-g923-autocenter", L"--duration", L"10"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-logitech-g923-autocenter", L"--list"}).success);
+}
+
 TEST_CASE("CliParser: --ffb-simulate conflicts with other modes", "[DeviceProbe][CliParser][FfbSimulate][Invalid]") {
     REQUIRE_FALSE(CliParser::Parse({L"--ffb-simulate", L"--bridge"}).success);
     REQUIRE_FALSE(CliParser::Parse({L"--list", L"--ffb-simulate"}).success);
@@ -129,6 +147,27 @@ TEST_CASE("CliParser: --ffb-hw-test-stop-only parses alone with no extra options
     REQUIRE(result.success);
     REQUIRE(result.options.mode == ProbeMode::FfbHardwareTestStopOnly);
     REQUIRE(result.options.ffbTestCooperativeLevel == FfbTestCooperativeLevel::Background);
+}
+
+TEST_CASE("CliParser: --ffb-hw-test-autocenter parses as a fixed real-hardware diagnostic",
+          "[DeviceProbe][CliParser][FfbHardwareTest]") {
+    const auto result = CliParser::Parse({L"--ffb-hw-test-autocenter"});
+    REQUIRE(result.success);
+    REQUIRE(result.options.mode == ProbeMode::FfbHardwareTestAutoCenter);
+    REQUIRE(result.options.ffbTestCooperativeLevel == FfbTestCooperativeLevel::Background);
+
+    const auto focused =
+        CliParser::Parse({L"--ffb-hw-test-autocenter", L"--ffb-cooperative-level", L"foreground-focused"});
+    REQUIRE(focused.success);
+    REQUIRE(focused.options.ffbTestCooperativeLevel == FfbTestCooperativeLevel::ForegroundFocused);
+}
+
+TEST_CASE("CliParser: --ffb-hw-test-autocenter rejects generic duration/rate and effect selection",
+          "[DeviceProbe][CliParser][FfbHardwareTest][Invalid]") {
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-autocenter", L"--duration", L"5"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-autocenter", L"--rate", L"60"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-autocenter", L"--effect", L"spring"}).success);
+    REQUIRE_FALSE(CliParser::Parse({L"--ffb-hw-test-autocenter", L"--bridge"}).success);
 }
 
 TEST_CASE("CliParser: real FFB tests accept an explicit cooperative level",

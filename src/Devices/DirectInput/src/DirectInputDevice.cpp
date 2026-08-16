@@ -38,6 +38,16 @@ static_assert((kEffectParameterUpdateFlags & DIEP_START) == 0);
     return std::isfinite(value) ? std::clamp(value, minimum, maximum) : 0.0f;
 }
 
+[[nodiscard]] DIPROPDWORD DeviceDwordProperty(DWORD value = 0) noexcept {
+    DIPROPDWORD property{};
+    property.diph.dwSize = sizeof(DIPROPDWORD);
+    property.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+    property.diph.dwObj = 0;
+    property.diph.dwHow = DIPH_DEVICE;
+    property.dwData = value;
+    return property;
+}
+
 // DirectInput reports POVs in hundredths of a degree, clockwise from north,
 // or 0xFFFFFFFF when centered/no input. Buckets into 8 sectors of 45
 // degrees each, offset by half a sector so 0 degrees lands in the middle of
@@ -134,8 +144,157 @@ DirectInputDevice::~DirectInputDevice() {
         // ignored, since the per-effect Stop() calls above are already the
         // primary mechanism in that case.
         device_->SendForceFeedbackCommand(DISFFC_STOPALL);
+        // EndForceFeedbackSession is the one place that restores a native
+        // autocenter value changed for this session. It also unacquires so
+        // the vendor driver/software can resume ownership. A final
+        // Unacquire remains harmless defense in depth if teardown was only
+        // partially initialized or restoration itself failed.
+        static_cast<void>(EndForceFeedbackSession());
         device_->Unacquire();
     }
+}
+
+Status DirectInputDevice::BeginForceFeedbackSession() noexcept {
+    if (forceFeedbackSessionActive_) {
+        return Status::Ok();
+    }
+    if (!device_) {
+        return Status::NotConnected("Cannot begin force-feedback session on a disconnected device");
+    }
+    if (!exclusiveForceFeedbackAccessRequested_) {
+        return Status::BackendError("Cannot begin force-feedback session without exclusive DirectInput access");
+    }
+
+    // Microsoft documents DIPROP_AUTOCENTER as a device-wide property and
+    // documents that every property except DIPROP_FFGAIN can only be
+    // changed while unacquired. The official FFConst sample likewise sets
+    // AUTOCENTER=OFF before Acquire(). Keep this transition at the explicit
+    // ownership boundary -- never in the per-frame ApplyForceFeedback path.
+    const HRESULT unacquireHr = device_->Unacquire();
+    if (FAILED(unacquireHr)) {
+        return Status::BackendError("Failed to unacquire before configuring native autocenter: " +
+                                    FormatHresult(unacquireHr));
+    }
+
+    DIPROPDWORD previous = DeviceDwordProperty();
+    const HRESULT getHr = device_->GetProperty(DIPROP_AUTOCENTER, &previous.diph);
+    if (FAILED(getHr)) {
+        // Not all devices support this property. Preserve FFB compatibility
+        // instead of rejecting an otherwise valid device, but make the
+        // missing control explicit in diagnostics and change nothing we
+        // cannot reliably restore.
+        diagnostics_(LogLevel::Warning,
+                     "GetProperty(DIPROP_AUTOCENTER) failed: " + FormatHresult(getHr) +
+                         "; native autocenter left unchanged for this FFB session");
+    } else if (previous.dwData == DIPROPAUTOCENTER_OFF) {
+        diagnostics_(LogLevel::Info,
+                     "DIPROP_AUTOCENTER was already OFF; preserving the pre-session setting");
+    } else if (previous.dwData == DIPROPAUTOCENTER_ON) {
+        DIPROPDWORD disabled = DeviceDwordProperty(DIPROPAUTOCENTER_OFF);
+        const HRESULT setHr = device_->SetProperty(DIPROP_AUTOCENTER, &disabled.diph);
+        if (setHr == DI_PROPNOEFFECT) {
+            diagnostics_(LogLevel::Warning,
+                         "SetProperty(DIPROP_AUTOCENTER=OFF) returned DI_PROPNOEFFECT; native autocenter may remain active");
+        } else if (FAILED(setHr)) {
+            diagnostics_(LogLevel::Warning,
+                         "SetProperty(DIPROP_AUTOCENTER=OFF) failed: " + FormatHresult(setHr) +
+                             "; force feedback will continue without native-autocenter control");
+        } else {
+            autoCenterRestoreValue_ = previous.dwData;
+
+            DIPROPDWORD readback = DeviceDwordProperty();
+            const HRESULT readbackHr = device_->GetProperty(DIPROP_AUTOCENTER, &readback.diph);
+            if (SUCCEEDED(readbackHr) && readback.dwData == DIPROPAUTOCENTER_OFF) {
+                diagnostics_(LogLevel::Info,
+                             "DIPROP_AUTOCENTER changed ON -> OFF for the FFB ownership session (read-back confirmed)");
+            } else if (SUCCEEDED(readbackHr)) {
+                diagnostics_(LogLevel::Warning,
+                             "DIPROP_AUTOCENTER OFF write succeeded but read-back was not OFF; hardware behavior is unconfirmed");
+            } else {
+                diagnostics_(LogLevel::Warning,
+                             "DIPROP_AUTOCENTER OFF write succeeded but read-back failed: " +
+                                 FormatHresult(readbackHr));
+            }
+        }
+    } else {
+        diagnostics_(LogLevel::Warning,
+                     "GetProperty(DIPROP_AUTOCENTER) returned an unknown value; native autocenter left unchanged");
+    }
+
+    const HRESULT acquireHr = device_->Acquire();
+    if (FAILED(acquireHr)) {
+        // We are still unacquired here, so immediately undo a successful
+        // OFF transition before reporting failure. Never strand the wheel
+        // in a changed global state merely because exclusive reacquisition
+        // failed.
+        if (autoCenterRestoreValue_) {
+            DIPROPDWORD restore = DeviceDwordProperty(*autoCenterRestoreValue_);
+            const HRESULT restoreHr = device_->SetProperty(DIPROP_AUTOCENTER, &restore.diph);
+            const bool restoreConfirmed = SUCCEEDED(restoreHr) && restoreHr != DI_PROPNOEFFECT;
+            diagnostics_(restoreConfirmed ? LogLevel::Info : LogLevel::Error,
+                         !restoreConfirmed
+                             ? "Failed to restore DIPROP_AUTOCENTER after Acquire failure: " + FormatHresult(restoreHr)
+                             : "Restored DIPROP_AUTOCENTER after Acquire failure");
+            if (restoreConfirmed) {
+                autoCenterRestoreValue_.reset();
+            }
+        }
+        return Status::BackendError("Failed to reacquire after configuring native autocenter: " +
+                                    FormatHresult(acquireHr));
+    }
+
+    forceFeedbackSessionActive_ = true;
+    diagnostics_(LogLevel::Info, "Force-feedback ownership session begun; exclusive DirectInput device reacquired");
+    return Status::Ok();
+}
+
+Status DirectInputDevice::EndForceFeedbackSession() noexcept {
+    if (!device_) {
+        return Status::NotConnected("Cannot end force-feedback session on a disconnected device");
+    }
+    if (!forceFeedbackSessionActive_ && !autoCenterRestoreValue_) {
+        return Status::Ok();
+    }
+
+    std::string failures;
+    const HRESULT unacquireHr = device_->Unacquire();
+    if (FAILED(unacquireHr)) {
+        failures = "Unacquire before native-autocenter restore: " + FormatHresult(unacquireHr);
+    }
+
+    if (autoCenterRestoreValue_) {
+        DIPROPDWORD restore = DeviceDwordProperty(*autoCenterRestoreValue_);
+        const HRESULT restoreHr = device_->SetProperty(DIPROP_AUTOCENTER, &restore.diph);
+        HRESULT readbackHr = E_FAIL;
+        DIPROPDWORD readback = DeviceDwordProperty();
+        const bool setTookEffect = SUCCEEDED(restoreHr) && restoreHr != DI_PROPNOEFFECT;
+        if (setTookEffect) {
+            readbackHr = device_->GetProperty(DIPROP_AUTOCENTER, &readback.diph);
+        }
+        const bool restoreConfirmed =
+            setTookEffect && SUCCEEDED(readbackHr) && readback.dwData == *autoCenterRestoreValue_;
+        if (!restoreConfirmed) {
+            if (!failures.empty()) {
+                failures += "; ";
+            }
+            failures += "restore DIPROP_AUTOCENTER: set=" + FormatHresult(restoreHr);
+            if (setTookEffect) {
+                failures += ", read-back=" + FormatHresult(readbackHr);
+            }
+            diagnostics_(LogLevel::Error,
+                         "Failed to confirm restoration of pre-session DIPROP_AUTOCENTER value");
+        } else {
+            diagnostics_(LogLevel::Info, "Restored pre-session DIPROP_AUTOCENTER value (read-back confirmed)");
+            autoCenterRestoreValue_.reset();
+        }
+    }
+
+    forceFeedbackSessionActive_ = false;
+    lastForceFeedbackStateQueryResult_.reset();
+    lastForceFeedbackStateFlags_.reset();
+    exclusiveForceFeedbackAccessFailure_.reset();
+    return failures.empty() ? Status::Ok()
+                            : Status::BackendError("Failed to end force-feedback session cleanly: " + failures);
 }
 
 DWORD DirectInputDevice::SteeringAxisObjectOffset() const noexcept {
@@ -588,6 +747,9 @@ Status DirectInputDevice::ApplyForceFeedback(const rvwheel::dal::ForceFeedbackCo
     }
     if (!info_.capabilities.hasForceFeedback) {
         return Status::NotSupported("Device has no force feedback capability");
+    }
+    if (exclusiveForceFeedbackAccessRequested_ && !forceFeedbackSessionActive_) {
+        return Status::BackendError("BeginForceFeedbackSession must succeed before applying an exclusive effect");
     }
     if (exclusiveForceFeedbackAccessFailure_) {
         return Status::BackendError("Exclusive force-feedback state is unavailable: " +

@@ -12,7 +12,7 @@ namespace rvwheel::testing {
 // backend; used to test DeviceManager's refresh/dedup/preservation policy
 // AND the force feedback engine/safety controller without hardware.
 //
-// Every ApplyForceFeedback/StopForceFeedback call is recorded (parameters,
+// Every FFB lifecycle/apply/stop call is recorded (parameters,
 // call count, ordering via the shared `callLog`), and both can be made to
 // fail on demand via `nextApplyForceFeedbackFailure`/
 // `nextStopForceFeedbackFailure`, so a test can assert exactly what the
@@ -55,6 +55,17 @@ public:
         return rvwheel::dal::Status::Ok();
     }
 
+    rvwheel::dal::Status BeginForceFeedbackSession() noexcept override {
+        ++beginForceFeedbackSessionCallCount;
+        callLog.push_back("BeginForceFeedbackSession");
+        if (nextBeginForceFeedbackSessionFailure) {
+            const rvwheel::dal::Status failure = *nextBeginForceFeedbackSessionFailure;
+            nextBeginForceFeedbackSessionFailure.reset();
+            return failure;
+        }
+        return rvwheel::dal::Status::Ok();
+    }
+
     rvwheel::dal::Status StopForceFeedback() noexcept override {
         ++stopForceFeedbackCallCount;
         callLog.push_back("StopForceFeedback");
@@ -69,9 +80,20 @@ public:
         return rvwheel::dal::Status::Ok();
     }
 
+    rvwheel::dal::Status EndForceFeedbackSession() noexcept override {
+        ++endForceFeedbackSessionCallCount;
+        callLog.push_back("EndForceFeedbackSession");
+        if (persistentEndForceFeedbackSessionFailure) {
+            return *persistentEndForceFeedbackSessionFailure;
+        }
+        return rvwheel::dal::Status::Ok();
+    }
+
     int pollCount = 0;
     int forceFeedbackCallCount = 0;
     int stopForceFeedbackCallCount = 0;
+    int beginForceFeedbackSessionCallCount = 0;
+    int endForceFeedbackSessionCallCount = 0;
     int applyLayoutCallCount = 0;
 
     std::vector<rvwheel::dal::ForceFeedbackCommand> appliedCommands;
@@ -79,6 +101,8 @@ public:
 
     std::optional<rvwheel::dal::Status> nextApplyForceFeedbackFailure;
     std::optional<rvwheel::dal::Status> nextStopForceFeedbackFailure;
+    std::optional<rvwheel::dal::Status> nextBeginForceFeedbackSessionFailure;
+    std::optional<rvwheel::dal::Status> persistentEndForceFeedbackSessionFailure;
 
     // Unlike nextStopForceFeedbackFailure (single-shot), this fails EVERY
     // subsequent StopForceFeedback() call once set -- needed to simulate a

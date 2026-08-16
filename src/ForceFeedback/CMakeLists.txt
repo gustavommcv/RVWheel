@@ -8,6 +8,7 @@ add_library(rvwheel_ffb STATIC
     src/ForceFeedbackSafetyController.cpp
     src/ForceFeedbackEngine.cpp
     src/SpringDamperSource.cpp
+    src/SpeedSensitiveSpringSource.cpp
 )
 add_library(rvwheel::ffb ALIAS rvwheel_ffb)
 

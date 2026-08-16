@@ -24,6 +24,7 @@
 #include "ConsoleRenderer.hpp"
 #include "DeviceSelection.hpp"
 #include "HiddenWindow.hpp"
+#include "LogitechHidInspector.hpp"
 #include "JsonlFormatter.hpp"
 #include "MonitorFrameFormatter.hpp"
 #include "ProbeFormatting.hpp"
@@ -34,6 +35,7 @@
 #include "rvwheel/dal/DeviceManagerFactory.hpp"
 #include "rvwheel/dal/ICalibratableWheelDevice.hpp"
 #include "rvwheel/ffb/ForceFeedbackEngine.hpp"
+#include "rvwheel/ffb/SpeedSensitiveSpringSource.hpp"
 #include "rvwheel/ffb/SpringDamperSource.hpp"
 #include "rvwheel/profiles/ProfileLoader.hpp"
 #include "rvwheel/profiles/ProfileRepository.hpp"
@@ -429,12 +431,26 @@ int DeviceProbeApp::Run() {
             return RunFfbSimulate();
         case ProbeMode::FfbHardwareTestStopOnly:
             return RunFfbHardwareTestStopOnly();
+        case ProbeMode::FfbHardwareTestAutoCenter:
+            return RunFfbHardwareTestAutoCenter();
         case ProbeMode::FfbHardwareTestWeakEffect:
             return RunFfbHardwareTestWeakEffect();
         case ProbeMode::TelemetryMonitor:
             return RunTelemetryMonitor();
+        case ProbeMode::LogitechHidInfo:
+            return RunLogitechHidInfo();
+        case ProbeMode::FfbHardwareTestLogitechG923AutoCenter:
+            return RunFfbHardwareTestLogitechG923AutoCenter();
     }
     return 1;
+}
+
+int DeviceProbeApp::RunLogitechHidInfo() {
+    return InspectLogitechHidDevices(std::cout, std::cerr);
+}
+
+int DeviceProbeApp::RunFfbHardwareTestLogitechG923AutoCenter() {
+    return RunLogitechG923AutocenterHardwareTest(stopRequested_, std::cout, std::cerr);
 }
 
 int DeviceProbeApp::RunList() {
@@ -1116,6 +1132,34 @@ int DeviceProbeApp::RunBridge() {
     }
     bool ffbEnabledOnceReady = false;
 
+    // Adaptive (speed-sensitive) spring is a construction-time choice
+    // baked into ffbSession's own engine (see BuildEngine() in
+    // BridgeForceFeedbackSession.cpp) -- this flag only decides whether
+    // *this loop* also reads the RVT1 transport and feeds it in via
+    // TickWithTelemetry(). When false (the default, and the only
+    // possibility whenever ffbSession itself is null), the loop below
+    // never touches VehicleTelemetryTransport at all, so the static path
+    // never depends on RVT1 existing.
+    const bool adaptiveSpring = ffbSession && profileInfo.forceFeedback->speedSensitiveSpring.enabled;
+    const std::filesystem::path telemetryPath = adaptiveSpring ? ResolveVehicleTelemetryPath() : std::filesystem::path{};
+    // Same generous-but-bounded 500ms staleness window --telemetry-monitor
+    // uses (see RunTelemetryMonitor) -- intentionally independent of the
+    // FFB profile's own (typically much stricter) watchdogTimeoutMilliseconds,
+    // which ForceFeedbackSafetyController enforces separately once a
+    // sample's own receivedAt is fed into it below.
+    VehicleTelemetryFreshnessTracker telemetryTracker(std::chrono::milliseconds{500});
+    if (adaptiveSpring) {
+        std::cout << "Force feedback: speed-sensitive spring ENABLED (minimumScale="
+                  << profileInfo.forceFeedback->speedSensitiveSpring.minimumScale
+                  << ", fullStrengthSpeedMetersPerSecond="
+                  << profileInfo.forceFeedback->speedSensitiveSpring.fullStrengthSpeedMetersPerSecond
+                  << "). Reading: " << telemetryPath.string()
+                  << "\nA baseline/leftover frame or invalid/non-local telemetry never activates force; stale "
+                     "telemetry is handled by the safety controller's own watchdog.\n";
+    }
+    constexpr std::chrono::milliseconds kAdaptiveDiagnosticInterval{250}; // <= 4 times per second, never at poll rate.
+    std::optional<std::chrono::steady_clock::time_point> lastAdaptiveDiagnosticAt;
+
     // --duration is optional and OFF by default for --bridge: std::nullopt
     // preserves the exact prior infinite-until-Ctrl+C behavior. Only when
     // explicitly given does the loop below stop itself once the deadline
@@ -1174,14 +1218,62 @@ int DeviceProbeApp::RunBridge() {
 
         if (ffbSession && !ffbEnabledOnceReady &&
             rvwheel::tools::probe::IsReadyToEnableForceFeedback(pollStatus.IsOk(), state)) {
-            ffbSession->Enable();
-            ffbEnabledOnceReady = true;
-            std::cout << "Force feedback: device readiness reached; engine ENABLED.\n";
+            const Status enableStatus = ffbSession->Enable();
+            if (enableStatus.IsOk()) {
+                ffbEnabledOnceReady = true;
+                std::cout << "Force feedback: device readiness reached; ownership session prepared; engine ENABLED.\n";
+            } else {
+                std::cerr << "Force feedback: ownership-session preparation failed; engine remains disabled: "
+                          << FormatStatusCode(enableStatus.Code());
+                if (!enableStatus.Message().empty()) {
+                    std::cerr << " (" << enableStatus.Message() << ")";
+                }
+                std::cerr << "\n";
+                static_cast<void>(ffbSession->Stop());
+                ffbSession.reset();
+            }
         }
 
         if (ffbSession) {
             const bool wasFaulted = ffbSession->IsFaulted();
-            ffbSession->Tick(std::chrono::steady_clock::now());
+            const auto tickNow = std::chrono::steady_clock::now();
+            if (adaptiveSpring) {
+                const auto parsedFrame = ReadVehicleTelemetryFile(telemetryPath);
+                const auto freshSample = telemetryTracker.Observe(parsedFrame, tickNow);
+                std::optional<rvwheel::ffb::VehicleTelemetry> telemetry;
+                std::chrono::steady_clock::time_point telemetryTimestamp = tickNow;
+                if (freshSample.has_value()) {
+                    telemetry = ToVehicleTelemetry(*freshSample);
+                    telemetryTimestamp = freshSample->receivedAt;
+                }
+                ffbSession->TickWithTelemetry(tickNow, telemetry, telemetryTimestamp);
+
+                if (!lastAdaptiveDiagnosticAt.has_value() || tickNow - *lastAdaptiveDiagnosticAt >= kAdaptiveDiagnosticInterval) {
+                    lastAdaptiveDiagnosticAt = tickNow;
+                    const auto diagnostics = ffbSession->Diagnostics(tickNow);
+                    std::cout << "[adaptive] state=" << rvwheel::ffb::ToString(diagnostics.state);
+                    if (freshSample.has_value()) {
+                        const float speed = freshSample->frame.speedMetersPerSecond;
+                        const float scale = rvwheel::ffb::ComputeSpeedSensitiveSpringScale(
+                            speed, profileInfo.forceFeedback->speedSensitiveSpring.minimumScale,
+                            profileInfo.forceFeedback->speedSensitiveSpring.fullStrengthSpeedMetersPerSecond);
+                        const float requestedSpring =
+                            std::clamp(scale * std::clamp(profileInfo.forceFeedback->springStrength, 0.0f, 1.0f), 0.0f,
+                                       std::clamp(profileInfo.forceFeedback->springStrength, 0.0f, 1.0f));
+                        std::cout << " speed=" << speed << "m/s age="
+                                  << std::chrono::duration_cast<std::chrono::milliseconds>(tickNow - telemetryTimestamp)
+                                         .count()
+                                  << "ms scale=" << scale << " springRequested=" << requestedSpring
+                                  << " springApplied=" << diagnostics.lastAppliedCommand.spring;
+                    } else {
+                        std::cout << " speed=n/a age=n/a scale=n/a springRequested=n/a springApplied="
+                                  << diagnostics.lastAppliedCommand.spring;
+                    }
+                    std::cout << "\n";
+                }
+            } else {
+                ffbSession->Tick(tickNow);
+            }
             if (!wasFaulted && ffbSession->IsFaulted()) {
                 std::cerr << "Force feedback backend faulted; continuing input-only for the rest of this run "
                              "(no automatic re-arm).\n";
@@ -1246,6 +1338,11 @@ int DeviceProbeApp::RunBridge() {
         std::cout << "Final StopForceFeedback(): " << FormatStatusCode(stopResult.explicitStopStatus.Code());
         if (!stopResult.explicitStopStatus.Message().empty()) {
             std::cout << " (" << stopResult.explicitStopStatus.Message() << ")";
+        }
+        std::cout << "\n";
+        std::cout << "EndForceFeedbackSession(): " << FormatStatusCode(stopResult.sessionEndStatus.Code());
+        if (!stopResult.sessionEndStatus.Message().empty()) {
+            std::cout << " (" << stopResult.sessionEndStatus.Message() << ")";
         }
         std::cout << "\n";
         ffbStopConfirmed = stopResult.Confirmed();
@@ -1619,6 +1716,101 @@ int DeviceProbeApp::RunFfbHardwareTestStopOnly() {
     return anyPollOk && allPollsOk && retainedForeground && stopStatus.IsOk() ? 0 : 1;
 }
 
+int DeviceProbeApp::RunFfbHardwareTestAutoCenter() {
+    constexpr auto kObservationDuration = std::chrono::seconds{5};
+    constexpr auto kPollInterval = std::chrono::milliseconds{20};
+
+    std::cout << "=== RVWheel REAL HARDWARE TEST -- DirectInput native autocenter only ===\n"
+                 "This creates and starts NO force-feedback effect. After a 3-second comparison window it\n"
+                 "requests DIPROP_AUTOCENTER=OFF for 5 seconds, then restores the exact prior value.\n"
+                 "Expected: resistance/return-to-center may become weaker during those 5 seconds and return\n"
+                 "afterward. The wheel must NEVER move by itself. Press Ctrl+C immediately if it does.\n\n";
+
+    HiddenWindow window(RequestedFfbWindowMode(options_));
+    if (!window.IsValid()) {
+        std::cerr << "Failed to create the Win32 window required for DirectInput.\n";
+        return 1;
+    }
+    if (RequestsFocusedForegroundFfb(options_) && !window.ActivateForForegroundDiagnostic()) {
+        std::cerr << "Windows did not grant foreground ownership to the diagnostic window. No DirectInput "
+                     "device access was attempted; exiting safely.\n";
+        return 1;
+    }
+
+    auto manager = CreateManager(window, /*requestExclusiveForceFeedbackAccess=*/true,
+                                 RequestedFfbCooperativeLevel(options_));
+    manager->RefreshIfDue();
+    window.PumpMessages();
+
+    IWheelDevice* device = nullptr;
+    for (IWheelDevice* candidate : manager->Devices()) {
+        if (candidate->Info().capabilities.hasForceFeedback) {
+            device = candidate;
+            break;
+        }
+    }
+    if (device == nullptr) {
+        std::cerr << "No force-feedback-capable device was found. Nothing changed.\n";
+        return 1;
+    }
+
+    std::cout << "Target device: " << device->Info().name << " ("
+              << FormatVendorProductId(device->Info().vendorId, device->Info().productId) << ")\n"
+              << "For the next 3 seconds, gently note the normal centering resistance. No property has changed yet.\n";
+    for (int second = 3; second > 0 && !stopRequested_.load(); --second) {
+        std::cout << second << "...\n";
+        std::this_thread::sleep_for(std::chrono::seconds{1});
+    }
+    if (stopRequested_.load()) {
+        std::cout << "Test cancelled before DIPROP_AUTOCENTER was changed.\n";
+        return 1;
+    }
+
+    const Status beginStatus = device->BeginForceFeedbackSession();
+    std::cout << "BeginForceFeedbackSession(): " << FormatStatusCode(beginStatus.Code());
+    if (!beginStatus.Message().empty()) {
+        std::cout << " (" << beginStatus.Message() << ")";
+    }
+    std::cout << "\nObservation window ACTIVE for 5 seconds -- gently compare resistance now.\n";
+    if (!beginStatus.IsOk()) {
+        std::cerr << "The ownership session could not begin; no observation is valid.\n";
+        return 1;
+    }
+
+    bool allPollsReadable = true;
+    bool foregroundRetained = true;
+    std::uint64_t pollCount = 0;
+    const auto startedAt = std::chrono::steady_clock::now();
+    while (!stopRequested_.load() && std::chrono::steady_clock::now() - startedAt < kObservationDuration) {
+        window.PumpMessages();
+        if (RequestsFocusedForegroundFfb(options_) && !window.IsForeground()) {
+            foregroundRetained = false;
+            std::cerr << "The diagnostic window lost foreground ownership; ending the observation immediately.\n";
+            break;
+        }
+        if (!device->Poll().IsOk()) {
+            allPollsReadable = false;
+            std::cerr << "Input polling failed; ending the observation immediately.\n";
+            break;
+        }
+        ++pollCount;
+        std::this_thread::sleep_for(kPollInterval);
+    }
+
+    const Status endStatus = device->EndForceFeedbackSession();
+    std::cout << "Observation window CLOSED after " << std::fixed << std::setprecision(2)
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - startedAt).count() << "s and "
+              << pollCount << " readable polls.\n"
+              << "EndForceFeedbackSession(): " << FormatStatusCode(endStatus.Code());
+    if (!endStatus.Message().empty()) {
+        std::cout << " (" << endStatus.Message() << ")";
+    }
+    std::cout << "\nNo ApplyForceFeedback call was made and no effect was created by this test.\n"
+                 "Confirm whether resistance was lower ONLY during the 5-second window and returned afterward.\n";
+
+    return allPollsReadable && foregroundRetained && endStatus.IsOk() && !stopRequested_.load() ? 0 : 1;
+}
+
 int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
     // Fixed, deliberately conservative constants for this one gated test --
     // not CLI-configurable on purpose, so this mode can never be pointed at
@@ -1691,6 +1883,16 @@ int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
     }
 
     if (!stopRequested_.load()) {
+        const Status beginStatus = device->BeginForceFeedbackSession();
+        std::cout << "BeginForceFeedbackSession(): " << FormatStatusCode(beginStatus.Code());
+        if (!beginStatus.Message().empty()) {
+            std::cout << " (" << beginStatus.Message() << ")";
+        }
+        std::cout << "\n";
+        if (!beginStatus.IsOk()) {
+            std::cerr << "Ownership-session preparation failed; no effect was enabled.\n";
+            return 1;
+        }
         engine.Enable();
 
         const auto start = std::chrono::steady_clock::now();
@@ -1766,6 +1968,12 @@ int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
             std::cout << " (" << finalStop.Message() << ")";
         }
         std::cout << "\n";
+        const Status sessionEnd = device->EndForceFeedbackSession();
+        std::cout << "EndForceFeedbackSession(): " << FormatStatusCode(sessionEnd.Code());
+        if (!sessionEnd.Message().empty()) {
+            std::cout << " (" << sessionEnd.Message() << ")";
+        }
+        std::cout << "\n";
 
         if (backendFaulted) {
             std::cout << "Backend fault: " << faultReason << "\n";
@@ -1778,7 +1986,7 @@ int DeviceProbeApp::RunFfbHardwareTestWeakEffect() {
         std::cout << "\nTest finished. Confirm the effect felt correct and stopped completely -- and that the wheel "
                      "is not still resisting or centering -- before increasing gain or trying the other effect, per "
                      "docs/FORCE_FEEDBACK_HARDWARE_TEST.md.\n";
-        return !backendFaulted && !inputPollFailed && !foregroundLost && finalStop.IsOk() ? 0 : 1;
+        return !backendFaulted && !inputPollFailed && !foregroundLost && finalStop.IsOk() && sessionEnd.IsOk() ? 0 : 1;
     }
 
     std::cout << "\nTest cancelled before force feedback was enabled.\n";

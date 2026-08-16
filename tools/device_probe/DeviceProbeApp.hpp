@@ -28,8 +28,11 @@ private:
     [[nodiscard]] int RunBridge();
     [[nodiscard]] int RunFfbSimulate();
     [[nodiscard]] int RunFfbHardwareTestStopOnly();
+    [[nodiscard]] int RunFfbHardwareTestAutoCenter();
     [[nodiscard]] int RunFfbHardwareTestWeakEffect();
     [[nodiscard]] int RunTelemetryMonitor();
+    [[nodiscard]] int RunLogitechHidInfo();
+    [[nodiscard]] int RunFfbHardwareTestLogitechG923AutoCenter();
 
     CliOptions options_;
     std::atomic<bool>& stopRequested_;

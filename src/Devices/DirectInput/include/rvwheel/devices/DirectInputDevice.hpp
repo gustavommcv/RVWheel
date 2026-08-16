@@ -107,8 +107,10 @@ public:
     rvwheel::dal::Status ApplyLayout(const rvwheel::dal::WheelInputLayout& layout,
                                       const rvwheel::dal::DeviceReadinessPolicy& readinessPolicy) noexcept override;
 
+    rvwheel::dal::Status BeginForceFeedbackSession() noexcept override;
     rvwheel::dal::Status ApplyForceFeedback(const rvwheel::dal::ForceFeedbackCommand& command) noexcept override;
     rvwheel::dal::Status StopForceFeedback() noexcept override;
+    rvwheel::dal::Status EndForceFeedbackSession() noexcept override;
 
     // ICalibratableWheelDevice
     [[nodiscard]] std::vector<rvwheel::dal::RawAxisInfo> EnumerateRawAxes() const override;
@@ -158,6 +160,8 @@ private:
     // query actuator state and to treat a failed device-wide STOPALL as a
     // real loss of exclusivity instead of an expected nonexclusive result.
     bool exclusiveForceFeedbackAccessRequested_ = false;
+    bool forceFeedbackSessionActive_ = false;
+    std::optional<DWORD> autoCenterRestoreValue_;
     std::optional<HRESULT> lastForceFeedbackStateQueryResult_;
     std::optional<DWORD> lastForceFeedbackStateFlags_;
     std::optional<HRESULT> exclusiveForceFeedbackAccessFailure_;

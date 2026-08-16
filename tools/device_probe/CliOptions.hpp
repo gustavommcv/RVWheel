@@ -19,8 +19,11 @@ enum class ProbeMode {
     Calibrate,
     FfbSimulate,
     FfbHardwareTestStopOnly,
+    FfbHardwareTestAutoCenter,
     FfbHardwareTestWeakEffect,
     TelemetryMonitor,
+    LogitechHidInfo,
+    FfbHardwareTestLogitechG923AutoCenter,
 };
 
 // Which single condition effect --ffb-hw-test-weak-effect exercises. Only
